@@ -6,7 +6,7 @@ from typing import Dict, List
 import numpy as np
 from gym3.types import DictType, Discrete, TensorType
 
-from vpt_lib.actions import Buttons
+from basalt.vpt_lib.actions import Buttons
 
 
 class ActionMapping(abc.ABC):
@@ -191,6 +191,7 @@ class CameraHierarchicalMapping(ActionMapping):
         new_button_ac = []
         new_camera_ac = []
         for i in range(ac["buttons"].shape[0]):
+
             # Buttons
             key = tuple([v[i] for v in choices_by_group.values()])
             if ac["buttons"][i, Buttons.ALL.index("inventory")] == 1:

@@ -5,9 +5,9 @@ from typing import Dict, List, Optional
 from torch import nn
 from torch.nn import functional as F
 
-from vpt_lib import misc
-from vpt_lib import torch_util as tu
-from vpt_lib.util import FanInInitReLULayer
+from basalt.vpt_lib import misc
+from basalt.vpt_lib import torch_util as tu
+from basalt.vpt_lib.util import FanInInitReLULayer
 
 
 class CnnBasicBlock(nn.Module):

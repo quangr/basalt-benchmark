@@ -10,14 +10,14 @@ from basalt.utils.policies import build_n_layer_mlp_policy
 from basalt.utils.train_utils import create_on_epoch_end_checkpoint_saver
 
 def add_experiment_specific_args(parser):
-    parser.add_argument("--embeddings_dir", type=str, required=True, help="Path to the directory that contains the data embeddings")
-    parser.add_argument("--output_dir", type=str, required=True, help="Where to store the experiment results")
+    parser.add_argument("--embeddings_dir", type=str, default="pipeline_test_data/embeddings/foundation-model-3x.weights", help="Path to the directory that contains the data embeddings")
+    parser.add_argument("--output_dir", type=str, default="pipeline_test_data/bc_models/MineRLBasaltMakeWaterfall-v0", help="Where to store the experiment results")
 
     parser.add_argument("--max_files_to_load", type=int, default=None, help="Maximum number of embedding files to load. Takes the first ones.")
     parser.add_argument("--downsampling", type=int, default=1, help="Stride for loading a samples from a file (e.g. 2 -> take every other sample).")
     parser.add_argument("--skip_noops", action="store_true", help="If given, ignore actions that are no-ops.")
-    parser.add_argument("--n_epochs", type=int, default=100, help="number of epochs to train for")
-    parser.add_argument("--batch_size", type=int, default=1024, help="batch size for training")
+    parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs to train for")
+    parser.add_argument("--batch_size", type=int, default=512, help="batch size for training")
 
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="learning rate for training")
     parser.add_argument("--l2_weight", type=float, default=1e-5, help="L2 loss weight for training")
@@ -25,12 +25,12 @@ def add_experiment_specific_args(parser):
 
     parser.add_argument("--n_layers", type=int, default=2, help="Number of layers in the MLP")
 
-    parser.add_argument("--embedding_dim", type=int, default=None, help="Embedding dimension for the data embeddings")
+    parser.add_argument("--embedding_dim", type=int, default=3072, help="Embedding dimension for the data embeddings")
 
     parser.add_argument("--skip_if_exists", action="store_true", help="If set, will not train if the output directory already exists")
 
-    parser.add_argument("--save_every_epochs", type=int, default=1, help="Save the model every n epochs")
-    parser.add_argument("--log_every_batches", type=int, default=500, help="How often should we log metrics (in batches)")
+    parser.add_argument("--save_every_epochs", type=int, default=50, help="Save the model every n epochs")
+    parser.add_argument("--log_every_batches", type=int, default=10, help="How often should we log metrics (in batches)")
 
     parser.add_argument("--seed", type=int, default=random.randint(0, 1000000), help="Random seed to use")
 
@@ -71,6 +71,7 @@ def main(args):
         n_epochs=args.n_epochs,
         log_interval=args.log_every_batches,
         on_epoch_end=checkpoint_saver,
+        
     )
 
     # Save final policy

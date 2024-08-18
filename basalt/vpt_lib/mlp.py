@@ -1,8 +1,8 @@
 import torch as th
 from torch import nn
 
-from vpt_lib import misc
-from vpt_lib import torch_util as tu
+from basalt.vpt_lib import misc
+from basalt.vpt_lib import torch_util as tu
 
 
 class MLP(nn.Module):

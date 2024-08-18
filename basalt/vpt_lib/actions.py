@@ -2,7 +2,7 @@ import attr
 import minerl.herobraine.hero.mc as mc
 import numpy as np
 
-from vpt_lib.minecraft_util import store_args
+from basalt.vpt_lib.minecraft_util import store_args
 
 
 class Buttons:

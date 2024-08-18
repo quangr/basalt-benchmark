@@ -1,22 +1,27 @@
 import argparse
 import os
+from pyvirtualdisplay import Display
 import json
 
 import numpy as np
-import torch as th
+import torch
 import gym
 import minerl
 import tqdm
-from minerl.herobraine.env_specs.basalt_specs import BasaltBaseEnvSpec, FindCaveEnvSpec, MakeWaterfallEnvSpec, PenAnimalsVillageEnvSpec, VillageMakeHouseEnvSpec
+from minerl.herobraine.env_specs.basalt_specs import (
+    BasaltBaseEnvSpec,
+    FindCaveEnvSpec,
+    MakeWaterfallEnvSpec,
+    PenAnimalsVillageEnvSpec,
+    VillageMakeHouseEnvSpec,
+)
 from minerl.herobraine.hero.mc import ALL_ITEMS
 from minerl.herobraine.hero import handlers
-from imitation.algorithms import bc
 from basalt.vpt_lib.tree_util import tree_map
 import videoio
 
 from basalt.embed_trajectories import load_model_parameters
 from basalt.vpt_lib.agent import MineRLAgent
-from basalt.vpt_lib.cls_head import make_cls_head
 
 IMAGE_RESOLUTION = (640, 360)
 # Manual mapping so that below patching works
@@ -29,14 +34,77 @@ ENV_NAME_TO_SPEC = {
 
 # These are the seeds per environment models were evaluated on
 ENV_TO_BASALT_2022_SEEDS = {
-    "MineRLBasaltFindCave-v0": [14169, 65101, 78472, 76379, 39802, 95099, 63686, 49077, 77533, 31703, 73365],
-    # "MineRLBasaltMakeWaterfall-v0": [95674, 39036, 70373, 84685, 91255, 56595, 53737, 12095, 86455, 19570, 40250],
+    "MineRLBasaltFindCave-v0": [
+        14169,
+        65101,
+        78472,
+        76379,
+        39802,
+        95099,
+        63686,
+        49077,
+        77533,
+        31703,
+        73365,
+    ],
+    # "MineRLBasaltMakeWaterfall-v0": [
+    #     95674,
+    #     39036,
+    #     70373,
+    #     84685,
+    #     91255,
+    #     56595,
+    #     53737,
+    #     12095,
+    #     86455,
+    #     19570,
+    #     40250,
+    # ],
     "MineRLBasaltMakeWaterfall-v0": [ 39036, 53737],
-    "MineRLBasaltCreateVillageAnimalPen-v0": [21212, 85236, 14975, 57764, 56029, 65215, 83805, 35884, 27406, 5681265, 20848],
-    "MineRLBasaltBuildVillageHouse-v0": [52216, 29342, 67640, 73169, 86898, 70333, 12658, 99066, 92974, 32150, 78702],
+    "MineRLBasaltCreateVillageAnimalPen-v0": [
+        21212,
+        85236,
+        14975,
+        57764,
+        56029,
+        65215,
+        83805,
+        35884,
+        27406,
+        5681265,
+        20848,
+    ],
+    "MineRLBasaltBuildVillageHouse-v0": [
+        52216,
+        29342,
+        67640,
+        73169,
+        86898,
+        70333,
+        12658,
+        99066,
+        92974,
+        32150,
+        78702,
+    ],
 }
 
-KEYS_OF_INTEREST = ['equipped_items', 'life_stats', 'location_stats', 'use_item', 'drop', 'pickup', 'break_item', 'craft_item', 'mine_block', 'damage_dealt', 'entity_killed_by', 'kill_entity', 'full_stats']
+KEYS_OF_INTEREST = [
+    "equipped_items",
+    "life_stats",
+    "location_stats",
+    "use_item",
+    "drop",
+    "pickup",
+    "break_item",
+    "craft_item",
+    "mine_block",
+    "damage_dealt",
+    "entity_killed_by",
+    "kill_entity",
+    "full_stats",
+]
+
 
 # Hotpatch the MineRL BASALT envs to report more statistics.
 # NOTE: this is only to get more information on what agent is doing.
@@ -66,21 +134,61 @@ def new_create_observables(self):
         handlers.ObserveFromFullStats("kill_entity"),
         handlers.ObserveFromFullStats(None),
     ]
+
+
 BasaltBaseEnvSpec.create_observables = new_create_observables
 
+
 def add_rollout_specific_args(parser):
-    parser.add_argument("--output_dir", type=str, default="pipeline_test_data/rollouts/MineRLBasaltMakeWaterfall-v0", help="Where to store the rollout results")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="pipeline_test_data/rollouts/MineRLBasaltMakeWaterfall-v0",
+        help="Where to store the rollout results",
+    )
 
-    parser.add_argument("--agent_type", type=str, default="bc", choices=["bc"], help="Model type.")
-    parser.add_argument("--agent_file", type=str, default="pipeline_test_data/bc_models/MineRLBasaltMakeWaterfall-v0/policy_final", help="Path to the trained model to rollout")
+    parser.add_argument(
+        "--agent_file",
+        type=str,
+        default="pipeline_test_data/soft_promt/epoch_500.pt",
+        help="Path to the trained model to rollout",
+    )
 
-    parser.add_argument("--vpt_model", default="pipeline_test_data/VPT-models/foundation-model-3x.model", type=str, help="Path to the .model file to be used for embedding")
-    parser.add_argument("--vpt_weights", default="pipeline_test_data/VPT-models/foundation-model-3x.weights", type=str, help="Path to the .weights file to be used for embedding")
+    parser.add_argument(
+        "--vpt_model",
+        default="pipeline_test_data/VPT-models/foundation-model-3x.model",
+        type=str,
+        help="Path to the .model file to be used for embedding",
+    )
+    parser.add_argument(
+        "--vpt_weights",
+        default="pipeline_test_data/VPT-models/foundation-model-3x.weights",
+        type=str,
+        help="Path to the .weights file to be used for embedding",
+    )
 
-    parser.add_argument("--env", default="MineRLBasaltMakeWaterfall-v0", type=str, choices=ENV_NAME_TO_SPEC.keys(), help="Name of the environment to roll agent in")
-    parser.add_argument("--environment_seeds", default=None, nargs="+", type=int, help="Environment seeds to roll out on, one per video.")
+    parser.add_argument(
+        "--env",
+        default="MineRLBasaltMakeWaterfall-v0",
+        type=str,
+        choices=ENV_NAME_TO_SPEC.keys(),
+        help="Name of the environment to roll agent in",
+    )
+    parser.add_argument(
+        "--environment_seeds",
+        default=None,
+        nargs="+",
+        type=int,
+        help="Environment seeds to roll out on, one per video.",
+    )
 
-    parser.add_argument("--max_steps_per_seed", default=400, type=int, help="Maximum number of steps to run for per seed")
+    parser.add_argument(
+        "--max_steps_per_seed",
+        default=400,
+        type=int,
+        help="Maximum number of steps to run for per seed",
+    )
+
 
 def remove_numpyness_and_remove_zeros(dict_with_numpy_arrays):
     # Recursively remove numpyness from a dictionary.
@@ -98,6 +206,7 @@ def remove_numpyness_and_remove_zeros(dict_with_numpy_arrays):
         else:
             return dict_with_numpy_arrays.tolist()
 
+
 def create_json_entry_dict(obs, action):
     stats = {}
     for key in KEYS_OF_INTEREST:
@@ -106,18 +215,21 @@ def create_json_entry_dict(obs, action):
     stats = json.dumps(stats)
     return stats
 
-def main(args):
-    vpt_agent_policy_kwargs, vpt_agent_pi_head_kwargs = load_model_parameters(args.vpt_model)
 
-    vpt_agent = MineRLAgent(policy_kwargs=vpt_agent_policy_kwargs, pi_head_kwargs=vpt_agent_pi_head_kwargs)
+def main(args):
+    soft_promt = torch.load(args.agent_file)
+    vpt_agent_policy_kwargs, vpt_agent_pi_head_kwargs = load_model_parameters(
+        args.vpt_model
+    )
+
+    vpt_agent = MineRLAgent(
+        policy_kwargs=vpt_agent_policy_kwargs, pi_head_kwargs=vpt_agent_pi_head_kwargs
+    )
     vpt_agent.load_weights(args.vpt_weights)
     vpt_agent.policy.eval()
 
-    dummy_first = th.from_numpy(np.array((False,))).cuda()
+    dummy_first = torch.from_numpy(np.array((False,))).cuda()
 
-    agent = None
-    if args.agent_type == "bc":
-        agent = bc.reconstruct_policy(args.agent_file)
 
     env = ENV_NAME_TO_SPEC[args.env]().make()
     # Patch so that we get more statistics for tracking purposes
@@ -136,7 +248,11 @@ def main(args):
         env.seed(seed)
         obs = env.reset()
         hidden_state = vpt_agent.policy.initial_state(1)
-        recorder = videoio.VideoWriter(os.path.join(args.output_dir, f"seed_{seed}.mp4"), resolution=(640, 360), fps=20)
+        recorder = videoio.VideoWriter(
+            os.path.join(args.output_dir, f"seed_{seed}.mp4"),
+            resolution=(640, 360),
+            fps=20,
+        )
 
         json_data = []
         recorder.write(obs["pov"])
@@ -148,42 +264,45 @@ def main(args):
             # The agent is only allowed to see the "pov" entry of the observation.
             # This function takes the "pov" observation and resizes it for the agent.
             agent_obs = vpt_agent._env_obs_to_agent(obs)
-            with th.no_grad():
-                vpt_embedding, hidden_state = vpt_agent.policy.get_output_for_observation(
-                    tree_map(lambda x: x.unsqueeze(1), agent_obs),
-                    hidden_state,
-                    dummy_first.unsqueeze(1),
-                    return_embedding=True,
+            agent_obs = tree_map(lambda x: x.unsqueeze(1), agent_obs)
+            agent_obs["soft_promt"] = soft_promt
+            with torch.no_grad():
+                vpt_embedding, hidden_state = (
+                    vpt_agent.policy.get_output_for_observation(
+                        agent_obs,
+                        hidden_state,
+                        dummy_first.unsqueeze(1),
+                        return_embedding=True,
+                    )
                 )
-                agent_action, _, _ = agent(vpt_embedding[0])
-            # We need to have both batch and seq dimensions for the actions
-            agent_action_dict = {
-                "buttons": agent_action[:, 0].unsqueeze(0),
-                "camera": agent_action[:, 1].unsqueeze(0)
-            }
-            minerl_action = vpt_agent._agent_action_to_env(agent_action_dict)
-            minerl_action["ESC"] = agent_action[0, 2].cpu().numpy()*0
+                # We need to have both batch and seq dimensions for the actions
+                pd = vpt_agent.policy.pi_head(vpt_embedding)
+                ac = vpt_agent.policy.pi_head.sample(pd, deterministic=False)
+                ac = tree_map(lambda x: x[:, 0], ac)
 
+                minerl_action = vpt_agent._agent_action_to_env(ac)
+                minerl_action["ESC"]=np.zeros_like(minerl_action["attack"])
             # Add the symbolic data here so that video and json are in sync
             json_data.append(create_json_entry_dict(obs, minerl_action))
-
-            obs, _, done, _ = env.step(minerl_action)
+            obs, _, done, info = env.step(minerl_action)
             recorder.write(obs["pov"])
             progress_bar.update(1)
             step_counter += 1
-            if args.max_steps_per_seed is not None and step_counter >= args.max_steps_per_seed:
+            if (
+                args.max_steps_per_seed is not None
+                and step_counter >= args.max_steps_per_seed
+            ):
                 break
         recorder.close()
-
-        # Write the jsonl file
-        with open(os.path.join(args.output_dir, f"seed_{seed}.jsonl"), "w") as f:
-            f.write("\n".join(json_data))
 
     env.close()
 
 
 if __name__ == "__main__":
+    # disp = Display()
+    # disp.start()
     parser = argparse.ArgumentParser()
     add_rollout_specific_args(parser)
     args = parser.parse_args()
     main(args)
+    # disp.stop()

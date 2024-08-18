@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 
-from vpt_lib.action_head import fan_in_linear
-from vpt_lib.normalize_ewma import NormalizeEwma
+from basalt.vpt_lib.action_head import fan_in_linear
+from basalt.vpt_lib.normalize_ewma import NormalizeEwma
 
 
 class ScaledMSEHead(nn.Module):

@@ -8,14 +8,14 @@ from gym3.types import DictType
 from torch import nn
 from torch.nn import functional as F
 
-from vpt_lib.action_head import make_action_head
-from vpt_lib.action_mapping import CameraHierarchicalMapping
-from vpt_lib.impala_cnn import ImpalaCNN
-from vpt_lib.normalize_ewma import NormalizeEwma
-from vpt_lib.scaled_mse_head import ScaledMSEHead
-from vpt_lib.tree_util import tree_map
-from vpt_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
-from vpt_lib.misc import transpose
+from basalt.vpt_lib.action_head import make_action_head
+from basalt.vpt_lib.action_mapping import CameraHierarchicalMapping
+from basalt.vpt_lib.impala_cnn import ImpalaCNN
+from basalt.vpt_lib.normalize_ewma import NormalizeEwma
+from basalt.vpt_lib.scaled_mse_head import ScaledMSEHead
+from basalt.vpt_lib.tree_util import tree_map
+from basalt.vpt_lib.util import FanInInitReLULayer, ResidualRecurrentBlocks
+from basalt.vpt_lib.misc import transpose
 
 
 class ImgPreprocessing(nn.Module):
@@ -200,6 +200,9 @@ class MinecraftPolicy(nn.Module):
             processed_obs = self.diff_obs_process(ob["diff_goal"])
             x = processed_obs + x
 
+        if "soft_promt" in ob:
+            x = x + ob['soft_promt']
+
         if self.pre_lstm_ln is not None:
             x = self.pre_lstm_ln(x)
 
@@ -299,9 +302,6 @@ class MinecraftAgentPolicy(nn.Module):
           - value prediction for given observation
           - new state
         """
-        # We need to add a fictitious time dimension everywhere
-        obs = tree_map(lambda x: x.unsqueeze(1), obs)
-        first = first.unsqueeze(1)
 
         if return_embedding:
             return self(obs=obs, first=first, state_in=state_in, return_embedding=True)
