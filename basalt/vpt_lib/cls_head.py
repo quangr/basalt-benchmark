@@ -45,8 +45,8 @@ class CategoricalClshead(Clshead):
         self.temperature = temperature
 
         if builtin_linear_layer:
-            self.linear_layer = nn.Sequential(nn.Linear(input_dim, input_dim), nn.ReLU(), nn.Linear(input_dim, np.prod(self.output_shape)))
-            # nn.Linear(input_dim, np.prod(self.output_shape))
+            # self.linear_layer = nn.Sequential(nn.Linear(input_dim, input_dim), nn.ReLU(), nn.Linear(input_dim, np.prod(self.output_shape)))
+            self.linear_layer =  nn.Sequential(nn.Linear(input_dim, np.prod(self.output_shape)))
         else:
             assert (
                 input_dim == num_actions

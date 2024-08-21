@@ -23,7 +23,7 @@ BasaltBaseEnvSpec.create_observables = new_create_observables
 
 
 env = gym.make("MineRLBasaltBuildVillageHouse-v0")
-env._max_episode_steps = 20
+# env._max_episode_steps = 20
 obs = env.reset()
 obs = env.reset()
 
