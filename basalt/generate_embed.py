@@ -5,10 +5,17 @@ from dataclasses import dataclass
 import tyro
 from basalt.common import load_model_parameters
 from basalt.vpt_lib.agent import MineRLAgent
-from basalt.utils.chunk_loader import MinecraftDataset, data_generator
+from basalt.utils.chunk_loader import (
+    BasaltMinecraftDataset,
+    data_generator,
+    get_mp4_tuple,
+)
 from basalt.vpt_lib.tree_util import tree_map
 from basalt.adapter import method_dict
+import glob
 from torch.utils.data import DataLoader
+import pickle
+import webdataset as wds
 
 DEVICE = "cuda"
 
@@ -39,10 +46,8 @@ def calculate_l2_norm_penalty(model):
 
 @dataclass
 class Args:
-    data_dir: str = "pipeline_test_data/demonstrations/MineRLBasaltMakeWaterfall-v0"
     in_model: str = "pipeline_test_data/VPT-models/foundation-model-3x.model"
     in_weights: str = "pipeline_test_data/VPT-models/foundation-model-3x.weights"
-    method: str = "soft_adapter"
 
 
 def train(args: Args):
@@ -56,28 +61,41 @@ def train(args: Args):
     agent.load_weights(args.in_weights)
     agent.policy.eval()
     policy = agent.policy
-    adapter_dict = method_dict[args.method]
-    adapter = adapter_dict["adapter"](agent)
 
-    optimizer = torch.optim.Adam(adapter.parameters(), lr=0.001)
     dataset_dict = {
-        "pipeline_test_data/demonstrations/MineRLBasaltMakeWaterfall-v0": 0,
-        # "pipeline_test_data/demonstrations/MineRLBasaltMakeWaterfall-v0-fail": 1,
+        "downloads/data/demonstrations/MineRLBasaltBuildVillageHouse-v0": 0,
+        "downloads/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0": 0,
     }
-    dataset = MinecraftDataset(dataset_dict=dataset_dict, contrast=False)
-    dl = DataLoader(
-        dataset,
-        batch_size=None,
-        shuffle=True,
-        num_workers=4,
-        collate_fn=lambda x: x,
-        persistent_workers=True,
-    )
-    for epoch in range(500):
-        epoch_loss = 0
-        num_batches = 0
 
-        batch_size = 2
+    need_embed_list = []
+    new_results = {}
+    for dataset_dir, label in dataset_dict.items():
+        new_results[os.path.abspath(dataset_dir)] = {}
+
+        unique_ids = glob.glob(os.path.join(dataset_dir, "*.mp4"))
+
+        for uid in unique_ids:
+            basename, video_path, json_path = get_mp4_tuple(uid, dataset_dir)
+            embed_pickle_path = os.path.abspath(
+                os.path.join(dataset_dir, basename + ".pickle")
+            )
+            if not os.path.exists(embed_pickle_path):
+                new_results[os.path.abspath(dataset_dir)][video_path] = []
+                need_embed_list.append((label, basename, video_path, json_path))
+    print("number of embed demo", len(need_embed_list))
+    if len(need_embed_list) > 0:
+        dataset = BasaltMinecraftDataset(
+            dataset_dict=dataset_dict, unique_ids=need_embed_list
+        )
+        dl = DataLoader(
+            dataset,
+            batch_size=None,
+            shuffle=True,
+            num_workers=4,
+            collate_fn=lambda x: x,
+            persistent_workers=True,
+        )
+        batch_size = 4
         last_batch_episode_id = -1 * np.ones(batch_size)
         step_size = 64
         gen = data_generator(
@@ -92,6 +110,7 @@ def train(args: Args):
             actions,
             labels,
             batch_episode_id,
+            uids,
         ), mask in gen:  # Fetch 3 batches for testing
             agent_obs = {
                 "img": obs.to(agent.device),
@@ -121,28 +140,50 @@ def train(args: Args):
                     first[:] = False
             last_batch_episode_id = batch_episode_id
             agent_actions = [agent._env_action_to_agent(act) for act in actions]
-
-            loss, new_agent_state = adapter.loss(
-                agent_obs, mask, agent_state, first, agent_actions, labels
-            )
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
+            with torch.no_grad():
+                embedding, new_agent_state = agent.policy.get_output_for_observation(
+                    agent_obs,
+                    agent_state,
+                    first,
+                    return_embedding=True,
+                )
+            for i, uid in enumerate(uids):
+                new_results[os.path.dirname(uid)][uid].append(
+                    (embedding[i], agent_actions[i], mask[i])
+                )
             agent_state = tree_map(lambda x: x.detach(), new_agent_state)
 
-            epoch_loss += loss.item()
-            num_batches += 1
+        for key, result_dict in new_results.items():
+            sink = wds.TarWriter(os.path.join(key, "webdataset.tar"))
 
-        average_epoch_loss = epoch_loss / num_batches
-        print(f"Epoch {epoch + 1}, Average Loss: {average_epoch_loss}")
-        if (epoch + 1) % 10 == 0:
-            save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"
-            directory = os.path.dirname(save_path)
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-            adapter.save_parameters(save_path)
-            print(f"Saved chekcpoints at {save_path}")
+            for subkey, embed in result_dict.items():
+                obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
+                actions = {
+                    key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
+                    for key in embed[0][1].keys()
+                }
+                sink.write(
+                    {
+                        "__key__": subkey,
+                        "obs.npy": obs,
+                        "actions.pyd": actions,
+                    }
+                )
+        sink.close()
+        # for key, result_dict in new_results.items():
+        #     for subkey, embed in result_dict.items():
+        #         obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
+        #         actions = {
+        #             key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
+        #             for key in embed[0][1].keys()
+        #         }
+        #         basename = os.path.basename(subkey).split(".")[0]
+        #         embed_pickle_path = os.path.abspath(
+        #             os.path.join(dataset_dir, basename + ".pickle")
+        #         )
+        #         with open(embed_pickle_path, "wb") as f:
+        #             pickle.dump((obs, actions), f)
+        print("FINISH")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import numpy as np
 import tqdm
 
 from basalt.vpt_lib.agent import MineRLAgent
-from basalt.utils.trunk_loader import MinecraftDataLoader
+from basalt.utils.chunk_loader import MinecraftDataLoader
 from basalt.vpt_lib.tree_util import tree_map
 
 DEVICE = "cuda"

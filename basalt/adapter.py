@@ -22,7 +22,7 @@ class AbstractAdapter(ABC):
         pass
 
     @abstractmethod
-    def loss(self, agent_obs, agent_state, first, agent_actions, label):
+    def loss(self, agent_obs, mask, agent_state, first, agent_actions, label):
         pass
 
     @abstractmethod
@@ -30,7 +30,23 @@ class AbstractAdapter(ABC):
         pass
 
 
-class BCAdapter(nn.Module, AbstractAdapter):
+class FixVPTAdapter(AbstractAdapter, ABC):
+    def loss(self, agent_obs, mask, agent_state, first, agent_actions, label):
+        embedding, new_agent_state = self.vpt_agent.policy.get_output_for_observation(
+            agent_obs,
+            agent_state,
+            first,
+            return_embedding=True,
+        )
+        loss = self.embed_loss(embedding, agent_actions, label)
+        return loss, new_agent_state
+
+    @abstractmethod
+    def embed_loss(self, embedding, action, label):
+        pass
+
+
+class BCAdapter(nn.Module, FixVPTAdapter):
     def __init__(self, vpt_agent):
         nn.Module.__init__(self)
         AbstractAdapter.__init__(self, vpt_agent)
@@ -45,24 +61,10 @@ class BCAdapter(nn.Module, AbstractAdapter):
     def save_parameters(self, weight_path):
         torch.save(self.head.state_dict(), weight_path)
 
-    def loss(self, agent_obs, agent_state, first, agent_actions, label):
-        embedding, new_agent_state = self.vpt_agent.policy.get_output_for_observation(
-            agent_obs,
-            agent_state,
-            first,
-            return_embedding=True,
-        )
+    def embed_loss(self, embedding, action, label):
         pi_logits = self.head(embedding)
-        log_loss = -self.head.logprob(
-            {
-                key: torch.tensor(np.array([x[key][0] for x in agent_actions])).to(
-                    self.vpt_agent.device
-                )
-                for key in agent_actions[0].keys()
-            },
-            pi_logits,
-        ).mean()
-        return log_loss, new_agent_state
+        log_loss = -self.head.logprob(action,pi_logits).mean()
+        return log_loss
 
     def compute_action(self, agent_obs, agent_state, first):
         with torch.no_grad():
@@ -93,7 +95,7 @@ class FineTuneBCAdapter(BCAdapter):
             param.requires_grad = True
 
 
-class CLSAdapter(nn.Module, AbstractAdapter):
+class CLSAdapter(nn.Module, FixVPTAdapter):
     def __init__(self, vpt_agent):
         nn.Module.__init__(self)
         AbstractAdapter.__init__(self, vpt_agent)
@@ -108,26 +110,18 @@ class CLSAdapter(nn.Module, AbstractAdapter):
     def save_parameters(self, weight_path):
         torch.save(self.head.state_dict(), weight_path)
 
-    def loss(self, agent_obs, agent_state, first, agent_actions, label):
-        embedding, new_agent_state = self.vpt_agent.policy.get_output_for_observation(
-            agent_obs,
-            agent_state,
-            first,
-            return_embedding=True,
-        )
+    def embed_loss(self, embedding, action, label):
         v = self.head(embedding)
-        cls_loss = self.compute_loss(v, agent_actions, label)
-        return cls_loss, new_agent_state
+        cls_loss = self.compute_loss(v, action, label)
+        return cls_loss
 
-    def compute_loss(self, v, agent_actions, label):
+    def compute_loss(self, v, action, label):
         total_loss = 0
 
         for key in v.keys():
             pred_v = v[key].squeeze()  # Shape: [batch_size, N]
-            targets = torch.tensor(
-                [action[key][0] for action in agent_actions], dtype=torch.long
-            )  # Shape: [batch_size,1]
-            p = pred_v.gather(1, targets.to(pred_v.device))[..., 0].sigmoid()
+            targets = action[key]  # Shape: [batch_size,1]
+            p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
             loss = label * p.log() + (1 - label) * (1 - p).log()
             total_loss += loss
 
@@ -145,7 +139,7 @@ class CLSAdapter(nn.Module, AbstractAdapter):
             )
             pd = self.vpt_agent.policy.pi_head(embedding)
             v = self.head(embedding)
-            input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
+            input_pd = {key: pd[key] + w * v[key] for key in v.keys()}
             ac = self.vpt_agent.policy.pi_head.sample(input_pd, deterministic=False)
             ac = tree_map(lambda x: x[:, 0], ac)
 
@@ -163,12 +157,12 @@ class SoftPromptAdapter(nn.Module, AbstractAdapter):
         )
 
     def load_parameters(self, weight_path):
-        self.soft_promt=torch.load(weight_path)
+        self.soft_promt = torch.load(weight_path)
 
     def save_parameters(self, weight_path):
         torch.save(self.soft_promt, weight_path)
 
-    def loss(self, agent_obs, agent_state, first, agent_actions, label):
+    def loss(self, agent_obs, mask, agent_state, first, agent_actions, label):
         agent_obs["soft_promt"] = self.soft_promt
         embedding, new_agent_state = self.vpt_agent.policy.get_output_for_observation(
             agent_obs,
@@ -179,15 +173,16 @@ class SoftPromptAdapter(nn.Module, AbstractAdapter):
         pi_logits = self.vpt_agent.policy.pi_head(embedding)
         log_loss = -self.vpt_agent.policy.pi_head.logprob(
             {
-                key: torch.tensor(np.array([x[key][0] for x in agent_actions])).to(
+                key: torch.tensor(np.array([x[key] for x in agent_actions])).to(
                     self.vpt_agent.device
                 )
                 for key in agent_actions[0].keys()
             },
             pi_logits,
-        ).mean()
+        )
+        mask = torch.tensor(mask).to(log_loss.device)
+        log_loss = (log_loss * mask).sum() / mask.sum()
         return log_loss, new_agent_state
-
 
     def compute_action(self, agent_obs, agent_state, first):
         with torch.no_grad():
@@ -236,4 +231,3 @@ method_dict = {
 #     vpt_agent.policy.eval()
 #     adapter = BCAdapter(vpt_agent)
 #     assert list(adapter.parameters())==list(adapter.head.parameters())
-

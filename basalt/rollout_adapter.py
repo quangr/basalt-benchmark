@@ -41,7 +41,7 @@ BasaltBaseEnvSpec.create_observables = new_create_observables
 
 # Function to reset environment and return initial observation
 def reset_env(env):
-    env.seed(39036)
+    # env.seed(39036)
     obs = env.reset()
     obs["pov"] = resize_image(obs["pov"], AGENT_RESOLUTION)
     return obs
@@ -51,7 +51,7 @@ def reset_env(env):
 def step_env(env, action):
     obs, reward, done, info = env.step(action)
     if done:
-        env.seed(39036)
+        # env.seed(39036)
         obs = env.reset()
     obs["pov"] = resize_image(obs["pov"], AGENT_RESOLUTION)
     return obs, reward, done, info
@@ -59,7 +59,7 @@ def step_env(env, action):
 
 # Function to create a new environment
 def create_env():
-    env = gym.make("MineRLBasaltMakeWaterfall-v0")
+    env = gym.make("MineRLBasaltBuildVillageHouse-v0")
     env._max_episode_steps = 1000
     return env
 
@@ -93,11 +93,11 @@ NUM_ENVS = 5
 
 @dataclass
 class Args:
-    agent_weight: str = "checkpoints/cls/epoch_60.pt"
+    agent_weight: str = "checkpoints/cls/epoch_20.pt"
     in_model: str = "pipeline_test_data/VPT-models/foundation-model-3x.model"
     in_weights: str = "pipeline_test_data/VPT-models/foundation-model-3x.weights"
     w: float = None
-    result_format: str = "json"
+    result_format: str = "mp4"
 
 
 def generate_results_json_path(agent_weight: str, w) -> str:
@@ -171,7 +171,6 @@ def main(args: Args):
     adapter = adapter_dict["adapter"](agent)
     adapter.load_parameters(args.agent_weight)
 
-
     agent_state = agent.policy.initial_state(NUM_ENVS)
 
     first = torch.ones(NUM_ENVS, device="cuda")
@@ -223,7 +222,9 @@ def main(args: Args):
                 if args.result_format == "mp4":
                     results[i].close()
                     results[i] = videoio.VideoWriter(
-                        os.path.join(os.path.dirname(args.agent_weight), f"{ids[i]}.mp4"),
+                        os.path.join(
+                            os.path.dirname(args.agent_weight), f"{ids[i]}.mp4"
+                        ),
                         resolution=AGENT_RESOLUTION,
                         fps=20,
                     )
