@@ -8,10 +8,24 @@ import tyro
 from basalt.common import load_model_parameters
 from basalt.vpt_lib.agent import MineRLAgent
 from basalt.adapter import method_dict, FixVPTAdapter
+import torch_xla.core.xla_model as xm
+import torch_xla.debug.metrics as met
+import torch_xla.distributed.parallel_loader as pl
 
 
 def identity(x):
     return x
+
+
+def tree_concatenate(tree1, tree2):
+    if isinstance(tree1, dict) and isinstance(tree2, dict):
+        return {k: tree_concatenate(tree1[k], tree2[k]) for k in tree1.keys()}
+    elif isinstance(tree1, list) and isinstance(tree2, list):
+        return [tree_concatenate(t1, t2) for t1, t2 in zip(tree1, tree2)]
+    elif isinstance(tree1, tuple) and isinstance(tree2, tuple):
+        return tuple(tree_concatenate(t1, t2) for t1, t2 in zip(tree1, tree2))
+    else:
+        return torch.concatenate([tree1, tree2])
 
 
 def process_batches(dataloader, batch_size=512):
@@ -25,9 +39,7 @@ def process_batches(dataloader, batch_size=512):
             batch[-1] = ("MineRLBasaltBuildVillageHouse" in batch[-1]) * torch.ones(
                 len(batch[0])
             )
-            buffer = torch.utils._pytree.tree_map(
-                lambda x, y: np.concatenate([x, y]), buffer, batch
-            )
+            buffer = tree_concatenate(buffer, batch)
         length = len(buffer[0])
         new_index = np.random.permutation(length)
         buffer = torch.utils._pytree.tree_map(lambda x: x[new_index], buffer)
@@ -48,7 +60,9 @@ class Args:
     method: str = "cls"
 
 
-DEVICE = "cuda"
+device = xm.xla_device()
+# device = torch.device("cuda")
+
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -70,7 +84,7 @@ if __name__ == "__main__":
     agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
 
     agent = MineRLAgent(
-        device=DEVICE,
+        device=device,
         policy_kwargs=agent_policy_kwargs,
         pi_head_kwargs=agent_pi_head_kwargs,
     )
@@ -81,24 +95,31 @@ if __name__ == "__main__":
     adapter = adapter_dict["adapter"](agent)
     assert isinstance(adapter, FixVPTAdapter)
     optimizer = torch.optim.Adam(adapter.parameters(), lr=0.0001)
-
+    import time
     for epoch in range(50):
         epoch_loss = 0
         num_batches = 0
-        for batch in process_batches(dataloader, batch_size=512):
+        for batch in process_batches(pl.MpDeviceLoader(dataloader, xm.xla_device()), batch_size=512):
+            start_time = time.time()
+            optimizer.zero_grad()
             batch = torch.utils._pytree.tree_map(
-                lambda x: torch.tensor(x).to(DEVICE), batch
+                lambda x: x, batch
             )
             embedding, action, label = batch
             loss = adapter.embed_loss(embedding, action, label)
-            optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
+            # optimizer.step()
+            xm.optimizer_step(optimizer)
 
-            epoch_loss += loss.item()
+            epoch_loss += loss.detach()
             num_batches += 1
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print("FINISH, elapsed_time:", elapsed_time)
 
-        average_epoch_loss = epoch_loss / num_batches
+        # print(met.metrics_report())
+        # average_epoch_loss = epoch_loss.item() / num_batches
+        average_epoch_loss =0
         print(f"Epoch {epoch + 1}, Average Loss: {average_epoch_loss}")
         if (epoch + 1) % 10 == 0:
             save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"

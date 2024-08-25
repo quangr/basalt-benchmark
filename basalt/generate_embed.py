@@ -14,34 +14,13 @@ from basalt.vpt_lib.tree_util import tree_map
 from basalt.adapter import method_dict
 import glob
 from torch.utils.data import DataLoader
-import pickle
+import time
 import webdataset as wds
+import torch_xla.core.xla_model as xm
+import torch_xla.debug.metrics as met
 
-DEVICE = "cuda"
-
-
-def compute_loss(v, agent_actions, label):
-    total_loss = 0
-
-    for key in v.keys():
-        pred_v = v[key].squeeze()  # Shape: [batch_size, N]
-        targets = torch.tensor(
-            [action[key][0] for action in agent_actions], dtype=torch.long
-        )  # Shape: [batch_size,1]
-        p = pred_v.gather(1, targets.to(pred_v.device))[..., 0].sigmoid()
-        loss = label * p.log() + (1 - label) * (1 - p).log()
-        total_loss += loss
-
-    return -total_loss.mean()
-
-
-def calculate_l2_norm_penalty(model):
-    l2_norm = 0.0
-
-    for param in model.parameters():
-        l2_norm += torch.sum(param**2)
-
-    return l2_norm
+# device = torch.device("cuda")
+device = xm.xla_device()
 
 
 @dataclass
@@ -54,13 +33,14 @@ def train(args: Args):
     agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
 
     agent = MineRLAgent(
-        device=DEVICE,
+        device=device,
         policy_kwargs=agent_policy_kwargs,
         pi_head_kwargs=agent_pi_head_kwargs,
     )
     agent.load_weights(args.in_weights)
-    agent.policy.eval()
     policy = agent.policy
+    policy.eval()
+    # policy = torch.compile(policy, backend="openxla")
 
     dataset_dict = {
         "downloads/data/demonstrations/MineRLBasaltBuildVillageHouse-v0": 0,
@@ -83,6 +63,7 @@ def train(args: Args):
                 new_results[os.path.abspath(dataset_dir)][video_path] = []
                 need_embed_list.append((label, basename, video_path, json_path))
     print("number of embed demo", len(need_embed_list))
+
     if len(need_embed_list) > 0:
         dataset = BasaltMinecraftDataset(
             dataset_dict=dataset_dict, unique_ids=need_embed_list
@@ -104,7 +85,7 @@ def train(args: Args):
             step_size=step_size,
         )
         agent_state = policy.initial_state(batch_size)
-        first = torch.zeros((batch_size, step_size)).bool().to(DEVICE)
+        first = torch.zeros((batch_size, step_size)).bool()
         for (
             obs,
             actions,
@@ -112,6 +93,7 @@ def train(args: Args):
             batch_episode_id,
             uids,
         ), mask in gen:  # Fetch 3 batches for testing
+            start_time = time.time()
             agent_obs = {
                 "img": obs.to(agent.device),
             }
@@ -130,28 +112,33 @@ def train(args: Args):
                 first[good_index != -1] = False
                 first[good_index == -1] = torch.from_numpy(
                     np.array([[True] + [False] * (step_size - 1)])
-                ).to(DEVICE)
+                )
             else:
                 if (last_batch_episode_id != batch_episode_id).any():
                     first[last_batch_episode_id != batch_episode_id] = torch.from_numpy(
                         np.array([[True] + [False] * (step_size - 1)])
-                    ).to(DEVICE)
+                    )
                 else:
                     first[:] = False
             last_batch_episode_id = batch_episode_id
             agent_actions = [agent._env_action_to_agent(act) for act in actions]
             with torch.no_grad():
-                embedding, new_agent_state = agent.policy.get_output_for_observation(
+                embedding, new_agent_state = policy.get_output_for_observation(
                     agent_obs,
                     agent_state,
-                    first,
+                    first.to(device),
                     return_embedding=True,
                 )
             for i, uid in enumerate(uids):
                 new_results[os.path.dirname(uid)][uid].append(
                     (embedding[i], agent_actions[i], mask[i])
                 )
+            print(met.metrics_report())
+
             agent_state = tree_map(lambda x: x.detach(), new_agent_state)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print("FINISH, elapsed_time:", elapsed_time)
 
         for key, result_dict in new_results.items():
             sink = wds.TarWriter(os.path.join(key, "webdataset.tar"))
@@ -183,7 +170,9 @@ def train(args: Args):
         #         )
         #         with open(embed_pickle_path, "wb") as f:
         #             pickle.dump((obs, actions), f)
-        print("FINISH")
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print("FINISH, elapsed_time:", elapsed_time)
 
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ class MineRLAgent:
 
     def load_weights(self, path):
         """Load model weights from a path, and reset hidden state"""
-        self.policy.load_state_dict(th.load(path, map_location=self.device), strict=False)
+        self.policy.load_state_dict(th.load(path), strict=False)
         self.reset()
 
     def reset(self):
@@ -170,7 +170,7 @@ class MineRLAgent:
             minerl_action = {k: v[None] for k, v in minerl_action.items()}
         action = self.action_mapper.from_factored(minerl_action)
         if to_torch:
-            action = {k: th.from_numpy(v).to(self.device) for k, v in action.items()}
+            action = {k: th.from_numpy(v) for k, v in action.items()}
         return action
 
     def get_action(self, minerl_obs):

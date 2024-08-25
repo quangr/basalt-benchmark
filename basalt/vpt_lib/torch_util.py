@@ -1,22 +1,8 @@
 import functools
-import itertools
-import math
-import os
-import pickle
-import re
-import subprocess
-import tempfile
-from contextlib import contextmanager
-from hashlib import md5, sha1
-
-import numpy as np
-import torch as th
-import torch.distributed as dist
-import torch.distributions as dis
+import torch 
 import torch.nn.functional as F
 from torch import nn
 
-import basalt.vpt_lib.tree_util as tree_util
 from basalt.vpt_lib import misc
 
 
@@ -33,20 +19,20 @@ def contextmanager_to_decorator(cm):
 
 
 def have_cuda():
-    return th.has_cuda
+    return torch.has_cuda
 
 
 def default_device_type():
     return "cuda" if have_cuda() else "cpu"
 
 
-no_grad = contextmanager_to_decorator(th.no_grad)
-DEFAULT_DEVICE = th.device(type=default_device_type())
+no_grad = contextmanager_to_decorator(torch.no_grad)
+DEFAULT_DEVICE = torch.device(type=default_device_type())
 
 
 def set_default_torch_device(device):
     global DEFAULT_DEVICE
-    DEFAULT_DEVICE = th.device(device)
+    DEFAULT_DEVICE = torch.device(device)
 
 
 def dev():
@@ -54,25 +40,25 @@ def dev():
 
 
 def zeros(*args, **kwargs):
-    return th.zeros(*args, **kwargs, device=dev())
+    return torch.zeros(*args, **kwargs, device=dev())
 
 
 def ones(*args, **kwargs):
-    return th.ones(*args, **kwargs, device=dev())
+    return torch.ones(*args, **kwargs, device=dev())
 
 
 def arange(*args, **kwargs):
-    return th.arange(*args, **kwargs, device=dev())
+    return torch.arange(*args, **kwargs, device=dev())
 
 
-def NormedLinear(*args, scale=1.0, dtype=th.float32, **kwargs):
+def NormedLinear(*args, scale=1.0, dtype=torch.float32, **kwargs):
     """
     nn.Linear but with normalized fan-in init
     """
     dtype = parse_dtype(dtype)
-    if dtype == th.float32:
+    if dtype == torch.float32:
         out = nn.Linear(*args, **kwargs)
-    elif dtype == th.float16:
+    elif dtype == torch.float16:
         out = LinearF16(*args, **kwargs)
     else:
         raise ValueError(dtype)
@@ -92,11 +78,11 @@ class LayerNormF16(nn.LayerNorm):
         return F.layer_norm(x, self.normalized_shape, self.weight.half(), self.bias.half(), self.eps)
 
 
-def LayerNorm(*args, dtype=th.float32, **kwargs):
+def LayerNorm(*args, dtype=torch.float32, **kwargs):
     dtype = parse_dtype(dtype)
-    if dtype == th.float32:
+    if dtype == torch.float32:
         out = nn.LayerNorm(*args, **kwargs)
-    elif dtype == th.float16:
+    elif dtype == torch.float16:
         out = LayerNormF16(*args, **kwargs)
     else:
         raise ValueError(dtype)
@@ -118,18 +104,18 @@ def sequential(layers, x, *args, diag_name=None, use_checkpoint=False):
     return x
 
 
-@no_grad
-def load_average_with_metadata(paths, overrides):
-    n_models = len(paths)
-    model, metadata = load_with_metadata(paths[0], overrides=overrides)
-    for p in model.parameters():
-        p.mul_(1 / n_models)
-    for p in paths[1:]:
-        new_model, _ = load_with_metadata(p, overrides=overrides)
-        for (n1, p1), (n2, p2) in misc.safezip(model.named_parameters(), new_model.named_parameters()):
-            assert n1 == n2, f"names {n1} and {n2} don't match"
-            p1.add_(p2.mul_(1 / n_models))
-    return model, metadata
+# @no_grad
+# def load_average_with_metadata(paths, overrides):
+#     n_models = len(paths)
+#     model, metadata = load_with_metadata(paths[0], overrides=overrides)
+#     for p in model.parameters():
+#         p.mul_(1 / n_models)
+#     for p in paths[1:]:
+#         new_model, _ = load_with_metadata(p, overrides=overrides)
+#         for (n1, p1), (n2, p2) in misc.safezip(model.named_parameters(), new_model.named_parameters()):
+#             assert n1 == n2, f"names {n1} and {n2} don't match"
+#             p1.add_(p2.mul_(1 / n_models))
+#     return model, metadata
 
 
 def save_kwargs(fn):
@@ -154,27 +140,27 @@ def save_kwargs(fn):
 
 
 def parse_dtype(x):
-    if isinstance(x, th.dtype):
+    if isinstance(x, torch.dtype):
         return x
     elif isinstance(x, str):
         if x == "float32" or x == "float":
-            return th.float32
+            return torch.float32
         elif x == "float64" or x == "double":
-            return th.float64
+            return torch.float64
         elif x == "float16" or x == "half":
-            return th.float16
+            return torch.float16
         elif x == "uint8":
-            return th.uint8
+            return torch.uint8
         elif x == "int8":
-            return th.int8
+            return torch.int8
         elif x == "int16" or x == "short":
-            return th.int16
+            return torch.int16
         elif x == "int32" or x == "int":
-            return th.int32
+            return torch.int32
         elif x == "int64" or x == "long":
-            return th.int64
+            return torch.int64
         elif x == "bool":
-            return th.bool
+            return torch.bool
         else:
             raise ValueError(f"cannot parse {x} as a dtype")
     else:
@@ -195,6 +181,6 @@ def index(x, i):
     expand_shape = list(x.shape)
     expand_shape[gather_dim] = 1
     i = i.expand(*expand_shape)
-    xi = th.gather(x, gather_dim, i)
+    xi = torch.gather(x, gather_dim, i)
     assert xi.shape[gather_dim] == 1
     return xi.squeeze(gather_dim)
