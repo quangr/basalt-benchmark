@@ -345,11 +345,14 @@ class BasaltMinecraftDataset(MinecraftDataset):
         if not os.path.isfile(json_path):
             raise FileNotFoundError(f"Json file not found: {json_path}")
 
-        with open(json_path) as json_file:
-            json_lines = json_file.readlines()
-            json_data = "[" + ",".join(json_lines) + "]"
-            json_data = json.loads(json_data)
-
+        try:
+            with open(json_path) as json_file:
+                json_lines = json_file.readlines()
+                json_data = "[" + ",".join(json_lines) + "]"
+                json_data = json.loads(json_data)
+        except Exception as e:
+            print(f"Failed to process file: {json_path}")
+            raise e
         frames = []
         actions = []
 

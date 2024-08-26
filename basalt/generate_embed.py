@@ -48,7 +48,7 @@ def train(args: Args):
     }
 
     need_embed = {}
-    zip_size=24
+    zip_size=25
     for dataset_dir, label in dataset_dict.items():
         task_name = os.path.basename(dataset_dir).split('-')[0].replace("MineRLBasalt","")
 
@@ -139,8 +139,8 @@ def train(args: Args):
         elapsed_time = end_time - start_time
         print("FINISH, elapsed_time:", elapsed_time)
 
-        sink = wds.TarWriter(os.path.join("/home/user/","."+tar_name))
-        print(os.path.join("/home/user/","."+tar_name))
+        sink = wds.TarWriter(tar_name)
+        print(tar_name)
         for subkey, embed in results.items():
             obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
             actions = {

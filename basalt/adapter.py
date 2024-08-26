@@ -122,7 +122,7 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             pred_v = v[key].squeeze()  # Shape: [batch_size, N]
             targets = action[key]  # Shape: [batch_size,1]
             p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
-            loss = label * p.log() + (1 - label) * (1 - p).log()
+            loss = label * p.clamp(min=1e-8).log() + (1 - label) * (1 - p).clamp(min=1e-8).log()
             total_loss += loss
 
         return -total_loss.mean()
@@ -146,6 +146,22 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             minerl_action = self.vpt_agent._agent_action_to_env(ac)
             minerl_action["ESC"] = np.zeros_like(minerl_action["attack"])
         return minerl_action, new_agent_state
+
+
+class NoisyCLSAdapter(CLSAdapter):
+
+
+    def compute_loss(self, v, action, label):
+        total_loss = 0
+
+        for key in v.keys():
+            pred_v = v[key].squeeze()  # Shape: [batch_size, N]
+            targets = action[key]  # Shape: [batch_size,1]
+            p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
+            loss = label * p.clamp(min=1e-8).log() + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            total_loss += loss
+
+        return -total_loss.mean()
 
 
 class SoftPromptAdapter(nn.Module, AbstractAdapter):

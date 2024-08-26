@@ -11,7 +11,6 @@ from basalt.adapter import method_dict, FixVPTAdapter
 import torch_xla.core.xla_model as xm
 import torch_xla
 
-
 def identity(x):
     return x
 
@@ -67,10 +66,7 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     dataset = (
         wds.WebDataset(
-            [
-                "/data/demonstrations/MineRLBasaltBuildVillageHouse-v0/webdataset.tar",
-                "/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0/webdataset.tar",
-            ]
+wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltBuildVillageHouse-v0/{0..3}.tar")+wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0/{0..6}.tar"),            shardshuffle=True
         )
         .shuffle(100)  # Shuffle the dataset with a buffer size of 100
         .decode()  # Decode the data
@@ -100,7 +96,7 @@ if __name__ == "__main__":
         num_batches = 0
         start_time = time.time()
         step=0
-        for batch in process_batches(dataloader, batch_size=512):
+        for batch in process_batches(dataloader, batch_size=2048):
             with torch_xla.step():
                 optimizer.zero_grad()
                 batch = torch.utils._pytree.tree_map(
