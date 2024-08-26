@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from basalt.vpt_lib.agent import MineRLAgent
 import torch
 from datetime import datetime
+import torch_xla.core.xla_model as xm
 
 from basalt.vpt_lib.agent import resize_image, AGENT_RESOLUTION
 
@@ -93,9 +94,9 @@ NUM_ENVS = 5
 
 @dataclass
 class Args:
-    agent_weight: str = "checkpoints/cls/epoch_20.pt"
-    in_model: str = "pipeline_test_data/VPT-models/foundation-model-3x.model"
-    in_weights: str = "pipeline_test_data/VPT-models/foundation-model-3x.weights"
+    agent_weight: str = "checkpoints/cls/epoch_10.pt"
+    in_model: str = "/data/foundation-model-3x.model"
+    in_weights: str = "/data/foundation-model-3x.weights"
     w: float = None
     result_format: str = "mp4"
 
@@ -123,6 +124,7 @@ def generate_results_json_path(agent_weight: str, w) -> str:
 
     return results_path
 
+device = xm.xla_device()
 
 def main(args: Args):
     if args.result_format == "json":
@@ -159,7 +161,7 @@ def main(args: Args):
     agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
 
     agent = MineRLAgent(
-        device="cuda",
+        device=device,
         policy_kwargs=agent_policy_kwargs,
         pi_head_kwargs=agent_pi_head_kwargs,
     )
@@ -173,7 +175,7 @@ def main(args: Args):
 
     agent_state = agent.policy.initial_state(NUM_ENVS)
 
-    first = torch.ones(NUM_ENVS, device="cuda")
+    first = torch.ones(NUM_ENVS, device=device)
     rollout_num = 40
     while not all(done) and max(ids) < rollout_num:
         step += 1
@@ -186,7 +188,7 @@ def main(args: Args):
                         if ids[i] < rollout_num
                     ]
                 )
-            ).to("cuda")
+            ).to(device)
         }
         good_index = [i for i in range(NUM_ENVS) if ids[i] < rollout_num]
         agent_state = tree_map(lambda x: x if x is None else x[good_index], agent_state)
@@ -199,6 +201,7 @@ def main(args: Args):
             actions, agent_state = adapter.compute_action(
                 agent_obs, agent_state, first[:, None].bool(), args.w
             )
+        xm.mark_step()
         actions = [
             {key: actions[key][i] for key in actions}
             for i in range(len(actions["attack"]))

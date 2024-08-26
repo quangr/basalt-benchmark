@@ -9,8 +9,7 @@ from basalt.common import load_model_parameters
 from basalt.vpt_lib.agent import MineRLAgent
 from basalt.adapter import method_dict, FixVPTAdapter
 import torch_xla.core.xla_model as xm
-import torch_xla.debug.metrics as met
-import torch_xla.distributed.parallel_loader as pl
+import torch_xla
 
 
 def identity(x):
@@ -55,8 +54,8 @@ def process_batches(dataloader, batch_size=512):
 
 @dataclass
 class Args:
-    in_model: str = "pipeline_test_data/VPT-models/foundation-model-3x.model"
-    in_weights: str = "pipeline_test_data/VPT-models/foundation-model-3x.weights"
+    in_model: str = "/data/foundation-model-3x.model"
+    in_weights: str = "/data/foundation-model-3x.weights"
     method: str = "cls"
 
 
@@ -69,8 +68,8 @@ if __name__ == "__main__":
     dataset = (
         wds.WebDataset(
             [
-                "downloads/data/demonstrations/MineRLBasaltBuildVillageHouse-v0/webdataset.tar",
-                "downloads/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0/webdataset.tar",
+                "/data/demonstrations/MineRLBasaltBuildVillageHouse-v0/webdataset.tar",
+                "/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0/webdataset.tar",
             ]
         )
         .shuffle(100)  # Shuffle the dataset with a buffer size of 100
@@ -99,27 +98,29 @@ if __name__ == "__main__":
     for epoch in range(50):
         epoch_loss = 0
         num_batches = 0
-        for batch in process_batches(pl.MpDeviceLoader(dataloader, xm.xla_device()), batch_size=512):
-            start_time = time.time()
-            optimizer.zero_grad()
-            batch = torch.utils._pytree.tree_map(
-                lambda x: x, batch
-            )
-            embedding, action, label = batch
-            loss = adapter.embed_loss(embedding, action, label)
-            loss.backward()
-            # optimizer.step()
-            xm.optimizer_step(optimizer)
+        start_time = time.time()
+        step=0
+        for batch in process_batches(dataloader, batch_size=512):
+            with torch_xla.step():
+                optimizer.zero_grad()
+                batch = torch.utils._pytree.tree_map(
+                    lambda x: x.to(device), batch
+                )
+                embedding, action, label = batch
+                loss = adapter.embed_loss(embedding, action, label)
+                loss.backward()
+                # optimizer.step()
+                xm.optimizer_step(optimizer)
 
-            epoch_loss += loss.detach()
-            num_batches += 1
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print("FINISH, elapsed_time:", elapsed_time)
+                epoch_loss += loss.detach()
+                num_batches += 1
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print("FINISH, elapsed_time:", elapsed_time)
 
         # print(met.metrics_report())
-        # average_epoch_loss = epoch_loss.item() / num_batches
-        average_epoch_loss =0
+        average_epoch_loss = epoch_loss.item() / num_batches
+        # average_epoch_loss =0
         print(f"Epoch {epoch + 1}, Average Loss: {average_epoch_loss}")
         if (epoch + 1) % 10 == 0:
             save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"

@@ -332,6 +332,7 @@ class MinecraftDataset(Dataset):
 
 class BasaltMinecraftDataset(MinecraftDataset):
     def __getitem__(self, idx):
+        print(idx)
         cursor_image = cv2.imread(CURSOR_FILE, cv2.IMREAD_UNCHANGED)
         # Assume 16x16
         cursor_image = cursor_image[:16, :16, :]
@@ -430,46 +431,54 @@ def data_generator(dataloader, batch_size=2, step_size=64):
     for i in range(batch_size):
         batch_data.append(next(data_loader))
     done = False
-    while not done or len(batch_data) > 0:
+    while any([data  is not None for data  in batch_data]):
         return_data = []
         mask = np.zeros((len(batch_data), step_size), dtype=np.int32)
 
         for i in range(len(batch_data)):
             # Determine the valid range for the current batch
-            start_idx = index[i]
-            end_idx = min(start_idx + step_size, len(batch_data[i][0]))
+            if batch_data[i] is not None:
+                start_idx = index[i]
+                end_idx = min(start_idx + step_size, len(batch_data[i][0]))
 
-            # Slice the data according to the current index and step_size
-            return_data.append(
-                [
-                    batch_data[i][0][start_idx:end_idx],
-                    tree_map(lambda x: x[start_idx:end_idx], batch_data[i][1]),
-                    batch_data[i][2],
-                    batch_data[i][3],
-                    batch_data[i][4],
-                ]
-            )
-            if start_idx + step_size > end_idx:
-                return_data[i][0] = pad_array(return_data[i][0], step_size)
-                return_data[i][1] = tree_map(
-                    lambda x: pad_array(x, step_size), return_data[i][1]
+                # Slice the data according to the current index and step_size
+                return_data.append(
+                    [
+                        batch_data[i][0][start_idx:end_idx],
+                        tree_map(lambda x: x[start_idx:end_idx], batch_data[i][1]),
+                        batch_data[i][2],
+                        batch_data[i][3],
+                        batch_data[i][4],
+                    ]
                 )
+                if start_idx + step_size > end_idx:
+                    return_data[i][0] = pad_array(return_data[i][0], step_size)
+                    return_data[i][1] = tree_map(
+                        lambda x: pad_array(x, step_size), return_data[i][1]
+                    )
 
-            # Update the mask to reflect valid data
-            mask[i, : end_idx - start_idx] = 1
+                # Update the mask to reflect valid data
+                mask[i, : end_idx - start_idx] = 1
 
-            # Update the index for the next iteration
-            index[i] += step_size
+                # Update the index for the next iteration
+                index[i] += step_size
 
-            # Check if we need to load new data for this batch
-            if index[i] >= len(batch_data[i][0]) and not done:
-                try:
-                    batch_data[i] = next(data_loader)
-                    index[i] = 0  # Reset index for the new data
-                except StopIteration:
-                    # Handle end of the dataset if needed
-                    done = True
+                # Check if we need to load new data for this batch
+                if index[i] >= len(batch_data[i][0]):
+                    if not done:
+                        try:
+                            batch_data[i] = next(data_loader)
+                            index[i] = 0  # Reset index for the new data
+                        except StopIteration:
+                            # Handle end of the dataset if needed
+                            done = True
+                            batch_data[i]=None
+                    else:
+                        batch_data[i]=None
 
+            else:
+                return_data.append(old_return_data[i])
+                return_data[i][3]=-1
         # Yield the batch data along with the mask
         obs = torch.from_numpy(np.stack([data[0] for data in return_data]))
         actions = [data[1] for data in return_data]
@@ -477,10 +486,7 @@ def data_generator(dataloader, batch_size=2, step_size=64):
         labels = [data[2] for data in return_data]
         batch_episode_id = [data[3] for data in return_data]
         yield (obs, actions, labels, np.array(batch_episode_id),[data[4] for data in return_data]), np.array(mask)
-        not_finish = [i for i, idx in enumerate(index) if idx < len(batch_data[i][0])]
-        index = [index[i] for i in not_finish]
-        batch_data = [batch_data[i] for i in not_finish]
-
+        old_return_data=return_data
 
 if __name__ == "__main__":
     # dataset_dict = {

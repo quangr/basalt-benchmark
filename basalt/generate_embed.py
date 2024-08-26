@@ -17,16 +17,16 @@ from torch.utils.data import DataLoader
 import time
 import webdataset as wds
 import torch_xla.core.xla_model as xm
-import torch_xla.debug.metrics as met
-
+# torch_xla.experimental.eager_mode(True)
+import torch_xla
 # device = torch.device("cuda")
 device = xm.xla_device()
 
 
 @dataclass
 class Args:
-    in_model: str = "pipeline_test_data/VPT-models/foundation-model-3x.model"
-    in_weights: str = "pipeline_test_data/VPT-models/foundation-model-3x.weights"
+    in_model: str = "/data/foundation-model-3x.model"
+    in_weights: str = "/data/foundation-model-3x.weights"
 
 
 def train(args: Args):
@@ -43,28 +43,45 @@ def train(args: Args):
     # policy = torch.compile(policy, backend="openxla")
 
     dataset_dict = {
-        "downloads/data/demonstrations/MineRLBasaltBuildVillageHouse-v0": 0,
-        "downloads/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0": 0,
+        "/data/demonstrations/MineRLBasaltBuildVillageHouse-v0": 0,
+        "/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0": 1,
     }
 
-    need_embed_list = []
-    new_results = {}
+    need_embed = {}
+    zip_size=24
     for dataset_dir, label in dataset_dict.items():
-        new_results[os.path.abspath(dataset_dir)] = {}
+        task_name = os.path.basename(dataset_dir).split('-')[0].replace("MineRLBasalt","")
 
-        unique_ids = glob.glob(os.path.join(dataset_dir, "*.mp4"))
+        file_list_path = f"scripts/filelists/{task_name}_urls.txt"
+        with open(file_list_path, 'r') as f:
+            file_list = f.read().splitlines()
+        end=False
+        for i in range(0, len(file_list)//(zip_size*2)):
+            tar_file = f"{i}.tar"
+            tar_path = os.path.join(dataset_dir, tar_file)
+            
+            if not os.path.exists(tar_path):
+                need_embed[tar_path]=[]
+                group = file_list[i*zip_size*2:i*zip_size*2+zip_size*2]
+                for file in group:
+                    file_path = os.path.join(dataset_dir, os.path.basename(file))
+                    if not os.path.exists(file_path):
+                        print(f"File not found: {file_path}")
+                        end=True
+                        break
+                    else:
+                        if file.endswith('.mp4'):
+                            basename, video_path, json_path = get_mp4_tuple(file_path, dataset_dir)
+                            need_embed[tar_path].append((label, basename, video_path, json_path))
+            if end:
+                del need_embed[tar_path]
+                break
 
-        for uid in unique_ids:
-            basename, video_path, json_path = get_mp4_tuple(uid, dataset_dir)
-            embed_pickle_path = os.path.abspath(
-                os.path.join(dataset_dir, basename + ".pickle")
-            )
-            if not os.path.exists(embed_pickle_path):
-                new_results[os.path.abspath(dataset_dir)][video_path] = []
-                need_embed_list.append((label, basename, video_path, json_path))
-    print("number of embed demo", len(need_embed_list))
 
-    if len(need_embed_list) > 0:
+
+    print("number of tar", len(need_embed))
+    for tar_name,need_embed_list in need_embed.items():
+        results={name[-2]:[] for name in  need_embed_list}
         dataset = BasaltMinecraftDataset(
             dataset_dict=dataset_dict, unique_ids=need_embed_list
         )
@@ -76,7 +93,7 @@ def train(args: Args):
             collate_fn=lambda x: x,
             persistent_workers=True,
         )
-        batch_size = 4
+        batch_size = 8
         last_batch_episode_id = -1 * np.ones(batch_size)
         step_size = 64
         gen = data_generator(
@@ -86,93 +103,59 @@ def train(args: Args):
         )
         agent_state = policy.initial_state(batch_size)
         first = torch.zeros((batch_size, step_size)).bool()
+        start_time = time.time()
         for (
             obs,
             actions,
             labels,
             batch_episode_id,
             uids,
-        ), mask in gen:  # Fetch 3 batches for testing
-            start_time = time.time()
+        ), mask in gen: 
             agent_obs = {
                 "img": obs.to(agent.device),
             }
-            if len(last_batch_episode_id) != len(batch_episode_id):
-                good_index = [
-                    last_batch_episode_id.tolist().index(id)
-                    if id in last_batch_episode_id
-                    else -1
-                    for id in batch_episode_id
-                ]  ##TODO what if reset
-                agent_state = tree_map(
-                    lambda x: x if x is None or good_index == -1 else x[good_index],
-                    agent_state,
-                )
-                first = first[good_index]
-                first[good_index != -1] = False
-                first[good_index == -1] = torch.from_numpy(
-                    np.array([[True] + [False] * (step_size - 1)])
-                )
-            else:
-                if (last_batch_episode_id != batch_episode_id).any():
-                    first[last_batch_episode_id != batch_episode_id] = torch.from_numpy(
-                        np.array([[True] + [False] * (step_size - 1)])
-                    )
-                else:
-                    first[:] = False
+            first[(last_batch_episode_id != batch_episode_id)&(batch_episode_id!=-1)] = torch.from_numpy(
+                np.array([[True] + [False] * (step_size - 1)])
+            )
+            first[(last_batch_episode_id == batch_episode_id)&(batch_episode_id!=-1)] = False
             last_batch_episode_id = batch_episode_id
             agent_actions = [agent._env_action_to_agent(act) for act in actions]
-            with torch.no_grad():
-                embedding, new_agent_state = policy.get_output_for_observation(
-                    agent_obs,
-                    agent_state,
-                    first.to(device),
-                    return_embedding=True,
-                )
+            with torch_xla.step():
+                with torch.no_grad():
+                    embedding, new_agent_state = policy.get_output_for_observation(
+                        agent_obs,
+                        agent_state,
+                        first.to(device),
+                        return_embedding=True,
+                    )
+                agent_state = tree_map(lambda x: x.detach(), new_agent_state)
             for i, uid in enumerate(uids):
-                new_results[os.path.dirname(uid)][uid].append(
-                    (embedding[i], agent_actions[i], mask[i])
-                )
-            print(met.metrics_report())
+                if batch_episode_id[i]!=-1:
+                    results[uid].append(
+                        (embedding[i], agent_actions[i], mask[i])
+                    )
 
-            agent_state = tree_map(lambda x: x.detach(), new_agent_state)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            print("FINISH, elapsed_time:", elapsed_time)
-
-        for key, result_dict in new_results.items():
-            sink = wds.TarWriter(os.path.join(key, "webdataset.tar"))
-
-            for subkey, embed in result_dict.items():
-                obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
-                actions = {
-                    key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
-                    for key in embed[0][1].keys()
-                }
-                sink.write(
-                    {
-                        "__key__": subkey,
-                        "obs.npy": obs,
-                        "actions.pyd": actions,
-                    }
-                )
-        sink.close()
-        # for key, result_dict in new_results.items():
-        #     for subkey, embed in result_dict.items():
-        #         obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
-        #         actions = {
-        #             key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
-        #             for key in embed[0][1].keys()
-        #         }
-        #         basename = os.path.basename(subkey).split(".")[0]
-        #         embed_pickle_path = os.path.abspath(
-        #             os.path.join(dataset_dir, basename + ".pickle")
-        #         )
-        #         with open(embed_pickle_path, "wb") as f:
-        #             pickle.dump((obs, actions), f)
         end_time = time.time()
         elapsed_time = end_time - start_time
         print("FINISH, elapsed_time:", elapsed_time)
+
+        sink = wds.TarWriter(os.path.join("/home/user/","."+tar_name))
+        print(os.path.join("/home/user/","."+tar_name))
+        for subkey, embed in results.items():
+            obs = np.concatenate([e[0].cpu().numpy()[e[2] == 1] for e in embed])
+            actions = {
+                key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
+                for key in embed[0][1].keys()
+            }
+            sink.write(
+                {
+                    "__key__": subkey,
+                    "obs.npy": obs,
+                    "actions.pyd": actions,
+                }
+            )
+        sink.close()
+
 
 
 if __name__ == "__main__":
