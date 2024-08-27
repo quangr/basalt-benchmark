@@ -63,7 +63,7 @@ class BCAdapter(nn.Module, FixVPTAdapter):
 
     def embed_loss(self, embedding, action, label):
         pi_logits = self.head(embedding)
-        log_loss = -self.head.logprob(action,pi_logits).mean()
+        log_loss = -self.head.logprob(action, pi_logits).mean()
         return log_loss
 
     def compute_action(self, agent_obs, agent_state, first):
@@ -122,10 +122,21 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             pred_v = v[key].squeeze()  # Shape: [batch_size, N]
             targets = action[key]  # Shape: [batch_size,1]
             p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
-            loss = label * p.clamp(min=1e-8).log() + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            loss = (
+                label * p.clamp(min=1e-8).log()
+                + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            )
             total_loss += loss
 
         return -total_loss.mean()
+
+    def embed_logit(self, embedding, action, label, w=1):
+        pd = self.vpt_agent.policy.pi_head(embedding)
+        v = self.head(embedding)
+        input_pd = {key: pd[key] + w *torch.where(label, 1, -1)[:,None,None] * v[key] for key in v.keys()}
+        log_loss = -self.vpt_agent.policy.pi_head.logprob(action, input_pd).mean()
+
+        return log_loss
 
     def compute_action(self, agent_obs, agent_state, first, w=1):
         with torch.no_grad():
@@ -139,7 +150,7 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             )
             pd = self.vpt_agent.policy.pi_head(embedding)
             v = self.head(embedding)
-            input_pd = {key: pd[key] + w * v[key] for key in v.keys()}
+            input_pd = {key: pd[key] - w * v[key] for key in v.keys()}
             # input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
             ac = self.vpt_agent.policy.pi_head.sample(input_pd, deterministic=False)
             ac = tree_map(lambda x: x[:, 0], ac)
@@ -151,7 +162,6 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
 
 class NoisyCLSAdapter(CLSAdapter):
 
-
     def compute_loss(self, v, action, label):
         total_loss = 0
 
@@ -159,7 +169,10 @@ class NoisyCLSAdapter(CLSAdapter):
             pred_v = v[key].squeeze()  # Shape: [batch_size, N]
             targets = action[key]  # Shape: [batch_size,1]
             p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
-            loss = label * p.clamp(min=1e-8).log() + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            loss = (
+                label * p.clamp(min=1e-8).log()
+                + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            )
             total_loss += loss
 
         return -total_loss.mean()

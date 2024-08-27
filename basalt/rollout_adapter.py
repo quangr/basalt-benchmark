@@ -94,10 +94,10 @@ NUM_ENVS = 5
 
 @dataclass
 class Args:
-    agent_weight: str = "checkpoints/cls/epoch_20.pt"
+    agent_weight: str = "checkpoints/cls/epoch_10.pt"
     in_model: str = "/data/foundation-model-3x.model"
     in_weights: str = "/data/foundation-model-3x.weights"
-    w: float = None
+    w: float = 2
     result_format: str = "mp4"
 
 
@@ -123,7 +123,11 @@ def generate_results_json_path(agent_weight: str, w, suffix="json", i="") -> str
         )
     # Combine with the base directory to get the full path
     results_path = os.path.join(base_dir, results_filename)
-
+    if results_path.startswith("/data/"):
+        results_path=results_path.replace("/data/","./")
+        directory = os.path.dirname(results_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
     return results_path
 
 

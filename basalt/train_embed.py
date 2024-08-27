@@ -60,28 +60,56 @@ class Args:
 
 
 device = xm.xla_device()
+
+
 # device = torch.device("cuda")
+def evaluate(adapter, dataloader):
+    adapter.eval()
+    total_loss = 0
+    num_batches = 0
+
+    with torch_xla.step():
+        with torch.no_grad():
+            for batch in process_batches(dataloader, batch_size=2048):
+                batch = torch.utils._pytree.tree_map(lambda x: x.to(device), batch)
+                embedding, action, label = batch
+                loss = adapter.embed_loss(embedding, action, label)
+                total_loss += loss.detach()
+                num_batches += 1
+
+    return total_loss.item() / num_batches
 
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    dataset = (
+    train_dataset = (
         wds.WebDataset(
             wds.shardlists.expand_urls(
-                "/data/demonstrations/MineRLBasaltMakeWaterfall-v0/{0..7}.tar"
+                "/data/demonstrations/MineRLBasaltMakeWaterfall-v0/{1..7}.tar"
             )
             + wds.shardlists.expand_urls(
-                "/data/demonstrations/MineRLBasaltFindCave-v0/{0..7}.tar"
+                "/data/demonstrations/MineRLBasaltFindCave-v0/{1..7}.tar"
             ),
             shardshuffle=True,
         )
-        .shuffle(100)  # Shuffle the dataset with a buffer size of 100
-        .decode()  # Decode the data
-        .to_tuple("mp4.obs.npy", "mp4.actions.pyd", "__url__")  # Select specific fields
+        .shuffle(100)
+        .decode()
+        .to_tuple("mp4.obs.npy", "mp4.actions.pyd", "__url__")
     )
-
-    # Create a DataLoader to fetch data in batches of size 4
-    dataloader = wds.WebLoader(dataset, batch_size=None, num_workers=4)
+    test_dataset = (
+        wds.WebDataset(
+            [
+                "/data/demonstrations/MineRLBasaltMakeWaterfall-v0/0.tar",
+                "/data/demonstrations/MineRLBasaltFindCave-v0/0.tar",
+            ],
+            shardshuffle=True,
+        )
+        .shuffle(100)
+        .decode()
+        .to_tuple("mp4.obs.npy", "mp4.actions.pyd", "__url__")
+    )
+    train_dataloader = wds.WebLoader(train_dataset, batch_size=None, num_workers=4)
+    test_dataloader = wds.WebLoader(test_dataset, batch_size=None, num_workers=2)
 
     agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
 
@@ -104,7 +132,7 @@ if __name__ == "__main__":
         num_batches = 0
         start_time = time.time()
         step = 0
-        for batch in process_batches(dataloader, batch_size=2048):
+        for batch in process_batches(train_dataloader, batch_size=2048):
             with torch_xla.step():
                 optimizer.zero_grad()
                 batch = torch.utils._pytree.tree_map(lambda x: x.to(device), batch)
@@ -119,11 +147,13 @@ if __name__ == "__main__":
         end_time = time.time()
         elapsed_time = end_time - start_time
         print("FINISH, elapsed_time:", elapsed_time)
+        average_train_loss = epoch_loss.item() / num_batches
+        print(f"Epoch {epoch + 1}, Average Train Loss: {average_train_loss}")
 
-        # print(met.metrics_report())
-        average_epoch_loss = epoch_loss.item() / num_batches
-        # average_epoch_loss =0
-        print(f"Epoch {epoch + 1}, Average Loss: {average_epoch_loss}")
+        # Evaluate on test dataset
+        test_loss = evaluate(adapter, test_dataloader)
+        print(f"Epoch {epoch + 1}, Test Loss: {test_loss}")
+
         if (epoch + 1) % 10 == 0:
             save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"
             directory = os.path.dirname(save_path)
