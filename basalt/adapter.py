@@ -140,6 +140,7 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             pd = self.vpt_agent.policy.pi_head(embedding)
             v = self.head(embedding)
             input_pd = {key: pd[key] + w * v[key] for key in v.keys()}
+            # input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
             ac = self.vpt_agent.policy.pi_head.sample(input_pd, deterministic=False)
             ac = tree_map(lambda x: x[:, 0], ac)
 

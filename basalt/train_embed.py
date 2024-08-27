@@ -11,6 +11,7 @@ from basalt.adapter import method_dict, FixVPTAdapter
 import torch_xla.core.xla_model as xm
 import torch_xla
 
+
 def identity(x):
     return x
 
@@ -29,12 +30,12 @@ def tree_concatenate(tree1, tree2):
 def process_batches(dataloader, batch_size=512):
     for i, batch in enumerate(dataloader):
         if i == 0:
-            batch[-1] = ("MineRLBasaltBuildVillageHouse" in batch[-1]) * torch.ones(
+            batch[-1] = ("MineRLBasaltMakeWaterfall" in batch[-1]) * torch.ones(
                 len(batch[0])
             )
             buffer = batch
         else:
-            batch[-1] = ("MineRLBasaltBuildVillageHouse" in batch[-1]) * torch.ones(
+            batch[-1] = ("MineRLBasaltMakeWaterfall" in batch[-1]) * torch.ones(
                 len(batch[0])
             )
             buffer = tree_concatenate(buffer, batch)
@@ -66,7 +67,13 @@ if __name__ == "__main__":
     args = tyro.cli(Args)
     dataset = (
         wds.WebDataset(
-wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltBuildVillageHouse-v0/{0..3}.tar")+wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltCreateVillageAnimalPen-v0/{0..6}.tar"),            shardshuffle=True
+            wds.shardlists.expand_urls(
+                "/data/demonstrations/MineRLBasaltMakeWaterfall-v0/{0..7}.tar"
+            )
+            + wds.shardlists.expand_urls(
+                "/data/demonstrations/MineRLBasaltFindCave-v0/{0..7}.tar"
+            ),
+            shardshuffle=True,
         )
         .shuffle(100)  # Shuffle the dataset with a buffer size of 100
         .decode()  # Decode the data
@@ -74,7 +81,7 @@ wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltBuildVillageHouse-v
     )
 
     # Create a DataLoader to fetch data in batches of size 4
-    dataloader = DataLoader(dataset, batch_size=None)
+    dataloader = wds.WebLoader(dataset, batch_size=None, num_workers=4)
 
     agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
 
@@ -91,17 +98,16 @@ wds.shardlists.expand_urls("/data/demonstrations/MineRLBasaltBuildVillageHouse-v
     assert isinstance(adapter, FixVPTAdapter)
     optimizer = torch.optim.Adam(adapter.parameters(), lr=0.0001)
     import time
+
     for epoch in range(50):
         epoch_loss = 0
         num_batches = 0
         start_time = time.time()
-        step=0
+        step = 0
         for batch in process_batches(dataloader, batch_size=2048):
             with torch_xla.step():
                 optimizer.zero_grad()
-                batch = torch.utils._pytree.tree_map(
-                    lambda x: x.to(device), batch
-                )
+                batch = torch.utils._pytree.tree_map(lambda x: x.to(device), batch)
                 embedding, action, label = batch
                 loss = adapter.embed_loss(embedding, action, label)
                 loss.backward()

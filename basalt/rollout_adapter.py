@@ -4,7 +4,7 @@ import minerl
 import time
 import videoio
 
-# from pyvirtualdisplay import Display
+from pyvirtualdisplay import Display
 import numpy as np
 import concurrent.futures
 from minerl.herobraine.env_specs.basalt_specs import BasaltBaseEnvSpec
@@ -20,7 +20,7 @@ from basalt.vpt_lib.agent import MineRLAgent
 import torch
 from datetime import datetime
 import torch_xla.core.xla_model as xm
-
+import torch_xla
 from basalt.vpt_lib.agent import resize_image, AGENT_RESOLUTION
 
 
@@ -60,8 +60,8 @@ def step_env(env, action):
 
 # Function to create a new environment
 def create_env():
-    env = gym.make("MineRLBasaltBuildVillageHouse-v0")
-    env._max_episode_steps = 1000
+    env = gym.make("MineRLBasaltMakeWaterfall-v0")
+    env._max_episode_steps = 3000
     return env
 
 
@@ -94,14 +94,14 @@ NUM_ENVS = 5
 
 @dataclass
 class Args:
-    agent_weight: str = "checkpoints/cls/epoch_10.pt"
+    agent_weight: str = "checkpoints/cls/epoch_20.pt"
     in_model: str = "/data/foundation-model-3x.model"
     in_weights: str = "/data/foundation-model-3x.weights"
     w: float = None
     result_format: str = "mp4"
 
 
-def generate_results_json_path(agent_weight: str, w) -> str:
+def generate_results_json_path(agent_weight: str, w, suffix="json", i="") -> str:
     # Extract the base directory and filename from the agent_weight path
     base_dir = os.path.dirname(agent_weight)
     weight_filename = os.path.basename(agent_weight)
@@ -116,15 +116,19 @@ def generate_results_json_path(agent_weight: str, w) -> str:
 
     # Construct the results filename
     if w is None:
-        results_filename = f"results_{agent_type}_{epoch}_{timestamp}.json"
+        results_filename = f"results_{i}_{agent_type}_{epoch}_{timestamp}.{suffix}"
     else:
-        results_filename = f"results_{agent_type}_{epoch}_w={w}_{timestamp}.json"
+        results_filename = (
+            f"results_{i}_{agent_type}_{epoch}_w={w}_{timestamp}.{suffix}"
+        )
     # Combine with the base directory to get the full path
     results_path = os.path.join(base_dir, results_filename)
 
     return results_path
 
+
 device = xm.xla_device()
+
 
 def main(args: Args):
     if args.result_format == "json":
@@ -132,7 +136,9 @@ def main(args: Args):
     else:
         results = [
             videoio.VideoWriter(
-                os.path.join(os.path.dirname(args.agent_weight), f"{i}.mp4"),
+                generate_results_json_path(
+                    args.agent_weight, args.w, args.result_format, i
+                ),
                 resolution=AGENT_RESOLUTION,
                 fps=20,
             )
@@ -176,7 +182,7 @@ def main(args: Args):
     agent_state = agent.policy.initial_state(NUM_ENVS)
 
     first = torch.ones(NUM_ENVS, device=device)
-    rollout_num = 40
+    rollout_num = 20
     while not all(done) and max(ids) < rollout_num:
         step += 1
         agent_obs = {
@@ -193,15 +199,15 @@ def main(args: Args):
         good_index = [i for i in range(NUM_ENVS) if ids[i] < rollout_num]
         agent_state = tree_map(lambda x: x if x is None else x[good_index], agent_state)
         first = first[good_index]
-        if args.w is None:
-            actions, agent_state = adapter.compute_action(
-                agent_obs, agent_state, first[:, None].bool()
-            )
-        else:
-            actions, agent_state = adapter.compute_action(
-                agent_obs, agent_state, first[:, None].bool(), args.w
-            )
-        xm.mark_step()
+        with torch_xla.step():
+            if args.w is None:
+                actions, agent_state = adapter.compute_action(
+                    agent_obs, agent_state, first[:, None].bool()
+                )
+            else:
+                actions, agent_state = adapter.compute_action(
+                    agent_obs, agent_state, first[:, None].bool(), args.w
+                )
         actions = [
             {key: actions[key][i] for key in actions}
             for i in range(len(actions["attack"]))
@@ -224,13 +230,17 @@ def main(args: Args):
                 ids[i] = new_id
                 if args.result_format == "mp4":
                     results[i].close()
-                    results[i] = videoio.VideoWriter(
-                        os.path.join(
-                            os.path.dirname(args.agent_weight), f"{ids[i]}.mp4"
-                        ),
-                        resolution=AGENT_RESOLUTION,
-                        fps=20,
-                    )
+                    if ids[i] < rollout_num:
+                        results[i] = videoio.VideoWriter(
+                            generate_results_json_path(
+                                args.agent_weight,
+                                args.w,
+                                args.result_format,
+                                ids[i],
+                            ),
+                            resolution=AGENT_RESOLUTION,
+                            fps=20,
+                        )
             else:
                 first[i] = False
                 process_observation(
@@ -252,8 +262,8 @@ def main(args: Args):
 
 
 if __name__ == "__main__":
-    # disp = Display()
-    # disp.start()
+    disp = Display()
+    disp.start()
     args = tyro.cli(Args)
     main(args)
-    # disp.stop()
+    disp.stop()
