@@ -377,7 +377,10 @@ class SelfAttentionLayer(AttentionLayerBase):
             """
             tprev = prev.shape[1]
             startfull = max(tprev - self.cache_keep_len, 0)
-            full = th.cat([prev[:, startfull:], new], dim=1)
+            if startfull==0:
+                full = th.cat([prev, new], dim=1)
+            else:
+                full = th.cat([prev[:, startfull:], new], dim=1)
             outstate = full[:, max(full.shape[1] - (self.cache_keep_len), 0) :]
             # To see that the preceding slicing is correct, consider the case
             # that maxlen==1. Then `full` only consists of `new`, and
