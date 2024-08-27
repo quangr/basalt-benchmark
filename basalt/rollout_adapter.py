@@ -89,7 +89,7 @@ def process_observation(results, obs, id, index, format):
         results[index].write(obs["pov"])
 
 
-NUM_ENVS = 5
+NUM_ENVS = 8
 
 
 @dataclass
@@ -97,7 +97,7 @@ class Args:
     agent_weight: str = "checkpoints/cls/epoch_10.pt"
     in_model: str = "/data/foundation-model-3x.model"
     in_weights: str = "/data/foundation-model-3x.weights"
-    w: float = 2
+    w: float = 5
     result_format: str = "mp4"
 
 
@@ -186,7 +186,7 @@ def main(args: Args):
     agent_state = agent.policy.initial_state(NUM_ENVS)
 
     first = torch.ones(NUM_ENVS, device=device)
-    rollout_num = 20
+    rollout_num = NUM_ENVS
     while not all(done) and max(ids) < rollout_num:
         step += 1
         agent_obs = {
