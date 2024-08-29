@@ -1,5 +1,7 @@
 import torch_xla.runtime as xr
 
+from basalt.config import DefaultDataConfig, TaskType
+
 xr.use_spmd()
 
 import os
@@ -35,27 +37,29 @@ from torch_xla.distributed.spmd import Mesh
 
 @dataclass
 class Args:
-    in_model: str = "/data/foundation-model-3x.model"
-    in_weights: str = "/data/foundation-model-3x.weights"
+    data: DefaultDataConfig
+    tasks: TaskType = TaskType.CaveVsWater
+
+    @property
+    def dataset_path(self):
+        return [f"{self.data.task_data_prefix}/{t}" for t in self.tasks.value]
 
 
 def train(args: Args):
-    agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
+    agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(
+        args.data.model_path
+    )
 
     agent = MineRLAgent(
         device=device,
         policy_kwargs=agent_policy_kwargs,
         pi_head_kwargs=agent_pi_head_kwargs,
     )
-    agent.load_weights(args.in_weights)
+    agent.load_weights(args.data.weights_path)
     policy = agent.policy
     policy.eval()
-    # policy = torch.compile(policy, backend="openxla")
 
-    dataset_dict = {
-        "/data/demonstrations/MineRLBasaltFindCave-v0": 0,
-        # "/data/demonstrations/MineRLBasaltMakeWaterfall-v0": 1,
-    }
+    dataset_dict = {item: index for index, item in enumerate(args.dataset_path)}
 
     need_embed = {}
     for dataset_dir, label in dataset_dict.items():
@@ -170,7 +174,9 @@ def train(args: Args):
                 agent_state = tree_map(lambda x: x.detach(), new_agent_state)
             for i, uid in enumerate(uids):
                 if batch_episode_id[i] != -1:
-                    results[uid].append((embedding[i].cpu().global_tensor, agent_actions[i], mask[i]))
+                    results[uid].append(
+                        (embedding[i].cpu().global_tensor, agent_actions[i], mask[i])
+                    )
 
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -179,9 +185,7 @@ def train(args: Args):
         sink = wds.TarWriter(tar_name)
         print(tar_name)
         for subkey, embed in results.items():
-            obs = np.concatenate(
-                [e[0].numpy()[e[2] == 1] for e in embed]
-            )
+            obs = np.concatenate([e[0].numpy()[e[2] == 1] for e in embed])
             actions = {
                 key: np.concatenate([e[1][key][e[2] == 1] for e in embed])
                 for key in embed[0][1].keys()
