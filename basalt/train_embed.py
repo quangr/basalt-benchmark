@@ -12,6 +12,7 @@ from basalt.vpt_lib.agent import MineRLAgent
 from basalt.adapter import method_dict, FixVPTAdapter
 import torch_xla.core.xla_model as xm
 import torch_xla
+import torch_xla.debug.metrics as met
 
 
 def identity(x):
@@ -42,12 +43,14 @@ def process_batches(dataloader, task_dict, batch_size=512):
         new_index = np.random.permutation(length)
         buffer = torch.utils._pytree.tree_map(lambda x: x[new_index], buffer)
         while length >= 10000:
-            yield torch.utils._pytree.tree_map(lambda x: x[:batch_size], buffer)
+            yield torch.utils._pytree.tree_map(
+                lambda x: x[:batch_size].to(device), buffer
+            )
             buffer = torch.utils._pytree.tree_map(lambda x: x[batch_size:], buffer)
             length = len(buffer[0])
 
     while len(buffer[0]) > 0:
-        yield torch.utils._pytree.tree_map(lambda x: x[:batch_size], buffer)
+        yield torch.utils._pytree.tree_map(lambda x: x[:batch_size].to(device), buffer)
         buffer = torch.utils._pytree.tree_map(lambda x: x[batch_size:], buffer)
 
 
@@ -55,7 +58,7 @@ def process_batches(dataloader, task_dict, batch_size=512):
 class Args:
     data: DefaultDataConfig
     tasks: TaskType = TaskType.CaveVsWater
-    method: str = "cls"
+    method: str = "sft_cls"
 
     @property
     def dataset_path(self):
@@ -63,6 +66,7 @@ class Args:
 
 
 device = xm.xla_device()
+# device = torch.device("cuda")
 
 
 if __name__ == "__main__":
@@ -111,20 +115,21 @@ if __name__ == "__main__":
         for batch in process_batches(train_dataloader, task_dict, batch_size=2048):
             with torch_xla.step():
                 optimizer.zero_grad()
-                batch = torch.utils._pytree.tree_map(lambda x: x.to(device), batch)
+                # batch = torch.utils._pytree.tree_map(lambda x: x, batch)
                 embedding, action, label = batch
                 loss = adapter.embed_loss(embedding, action, label)
                 loss.backward()
                 # optimizer.step()
                 xm.optimizer_step(optimizer)
 
-                epoch_loss += loss.detach()
-                num_batches += 1
+                # epoch_loss += loss.detach()
+                # num_batches += 1
         end_time = time.time()
         elapsed_time = end_time - start_time
         print("FINISH, elapsed_time:", elapsed_time)
-        average_train_loss = epoch_loss.item() / num_batches
-        print(f"Epoch {epoch + 1}, Average Train Loss: {average_train_loss}")
+        # average_train_loss = epoch_loss.item() / num_batches
+        # print(f"Epoch {epoch + 1}, Average Train Loss: {average_train_loss}")
+        # print(met.metrics_report())
 
         if (epoch + 1) % 10 == 0:
             save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"

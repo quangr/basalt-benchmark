@@ -11,6 +11,7 @@ from minerl.herobraine.env_specs.basalt_specs import BasaltBaseEnvSpec
 from minerl.herobraine.hero import handlers
 from basalt.adapter import method_dict
 import copy
+from basalt.config import DefaultDataConfig
 from basalt.vpt_lib.tree_util import tree_map
 import json
 import tyro
@@ -60,6 +61,7 @@ def step_env(env, action):
 
 # Function to create a new environment
 def create_env():
+    # env = gym.make("MineRLBasaltFindCave-v0")
     env = gym.make("MineRLBasaltMakeWaterfall-v0")
     env._max_episode_steps = 3000
     return env
@@ -94,10 +96,9 @@ NUM_ENVS = 8
 
 @dataclass
 class Args:
-    agent_weight: str = "checkpoints/cls/epoch_10.pt"
-    in_model: str = "/data/foundation-model-3x.model"
-    in_weights: str = "/data/foundation-model-3x.weights"
-    w: float = 5
+    data: DefaultDataConfig
+    agent_weight: str = "checkpoints/sft_cls/epoch_50.pt"
+    w: float = 0.5
     result_format: str = "mp4"
 
 
@@ -124,7 +125,7 @@ def generate_results_json_path(agent_weight: str, w, suffix="json", i="") -> str
     # Combine with the base directory to get the full path
     results_path = os.path.join(base_dir, results_filename)
     if results_path.startswith("/data/"):
-        results_path=results_path.replace("/data/","./")
+        results_path = results_path.replace("/data/", "./")
         directory = os.path.dirname(results_path)
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -168,14 +169,16 @@ def main(args: Args):
     step = 0
     start_time = time.time()
 
-    agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(args.in_model)
+    agent_policy_kwargs, agent_pi_head_kwargs = load_model_parameters(
+        args.data.model_path
+    )
 
     agent = MineRLAgent(
         device=device,
         policy_kwargs=agent_policy_kwargs,
         pi_head_kwargs=agent_pi_head_kwargs,
     )
-    agent.load_weights(args.in_weights)
+    agent.load_weights(args.data.weights_path)
     agent.policy.eval()
 
     method_name = os.path.dirname(args.agent_weight).split(os.sep)[-1]
@@ -185,32 +188,23 @@ def main(args: Args):
 
     agent_state = agent.policy.initial_state(NUM_ENVS)
 
-    first = torch.ones(NUM_ENVS, device=device)
+    first = torch.ones(NUM_ENVS)
     rollout_num = NUM_ENVS
-    while not all(done) and max(ids) < rollout_num:
+    while not all(done):
         step += 1
         agent_obs = {
             "img": torch.tensor(
-                np.array(
-                    [
-                        [obs_list[i]["pov"]]
-                        for i in range(NUM_ENVS)
-                        if ids[i] < rollout_num
-                    ]
-                )
+                np.array([[obs_list[i]["pov"]] for i in range(NUM_ENVS)])
             ).to(device)
         }
-        good_index = [i for i in range(NUM_ENVS) if ids[i] < rollout_num]
-        agent_state = tree_map(lambda x: x if x is None else x[good_index], agent_state)
-        first = first[good_index]
         with torch_xla.step():
             if args.w is None:
                 actions, agent_state = adapter.compute_action(
-                    agent_obs, agent_state, first[:, None].bool()
+                    agent_obs, agent_state, first[:, None].bool().to(device)
                 )
             else:
                 actions, agent_state = adapter.compute_action(
-                    agent_obs, agent_state, first[:, None].bool(), args.w
+                    agent_obs, agent_state, first[:, None].bool().to(device), args.w
                 )
         actions = [
             {key: actions[key][i] for key in actions}
@@ -224,11 +218,10 @@ def main(args: Args):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             results_list = list(executor.map(step_env, active_envs, active_actions))
 
-        obs_list, reward_list, done_list, info_list = zip(*results_list)
-
+        new_obs_list, reward_list, new_done_list, info_list = zip(*results_list)
         for idx, i in enumerate(active_indices):
             assert ids[i] < rollout_num
-            if done_list[idx]:
+            if new_done_list[idx]:
                 first[i] = True
                 new_id = max(ids) + 1
                 ids[i] = new_id
@@ -250,6 +243,7 @@ def main(args: Args):
                 process_observation(
                     results, obs_list[idx], ids[i], i, args.result_format
                 )
+                obs_list[i] = new_obs_list[idx]
 
         if step % 100 == 0:
             end_time = time.time()

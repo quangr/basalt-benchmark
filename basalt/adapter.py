@@ -153,9 +153,88 @@ class CLSAdapter(nn.Module, FixVPTAdapter):
             )
             pd = self.vpt_agent.policy.pi_head(embedding)
             v = self.head(embedding)
-            input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
+            input_pd = {key: pd[key] - w * v[key] for key in v.keys()}
             # input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
             ac = self.vpt_agent.policy.pi_head.sample(input_pd, deterministic=False)
+            ac = tree_map(lambda x: x[:, 0], ac)
+
+            minerl_action = self.vpt_agent._agent_action_to_env(ac)
+            minerl_action["ESC"] = np.zeros_like(minerl_action["attack"])
+        return minerl_action, new_agent_state
+
+
+class SFTCLSAdapter(nn.Module, FixVPTAdapter):
+    def __init__(self, vpt_agent):
+        nn.Module.__init__(self)
+        AbstractAdapter.__init__(self, vpt_agent)
+        self.head = make_cls_head(
+            vpt_agent.policy.action_space, vpt_agent.policy.net.hidsize
+        ).to(vpt_agent.device)
+        self.head.reset_parameters()
+
+        self.STF_head = self.vpt_agent.policy.pi_head
+        self.STF_head.reset_parameters()
+        for param in self.STF_head.parameters():
+            param.requires_grad = True
+
+    def load_parameters(self, weight_path):
+        head_dict, STF_head_dict = torch.load(weight_path)
+        self.head.load_state_dict(head_dict)
+        self.STF_head.load_state_dict(STF_head_dict)
+
+    def save_parameters(self, weight_path):
+        torch.save((self.head.state_dict(), self.STF_head.state_dict()), weight_path)
+
+    def embed_loss(self, embedding, action, label):
+        v = self.head(embedding)
+        cls_loss = self.compute_loss(v, action, label)
+
+        pi_logits = self.STF_head(embedding)
+        log_loss = -self.STF_head.logprob(action, pi_logits).mean()
+
+        return cls_loss + log_loss
+
+    def compute_loss(self, v, action, label):
+        total_loss = 0
+
+        for key in v.keys():
+            pred_v = v[key].squeeze()  # Shape: [batch_size, N]
+            targets = action[key]  # Shape: [batch_size,1]
+            p = pred_v.gather(1, targets.to(pred_v.device)).squeeze().sigmoid()
+            loss = (
+                label * p.clamp(min=1e-8).log()
+                + (1 - label) * (1 - p).clamp(min=1e-8).log()
+            )
+            total_loss += loss
+
+        return -total_loss.mean()
+
+    def embed_logit(self, embedding, action, label, w=1):
+        pd = self.vpt_agent.policy.pi_head(embedding)
+        v = self.head(embedding)
+        input_pd = {
+            key: pd[key] + w * torch.where(label, 1, -1)[:, None, None] * v[key]
+            for key in v.keys()
+        }
+        log_loss = -self.vpt_agent.policy.pi_head.logprob(action, input_pd).mean()
+
+        return log_loss
+
+    def compute_action(self, agent_obs, agent_state, first, w=1):
+        with torch.no_grad():
+            embedding, new_agent_state = (
+                self.vpt_agent.policy.get_output_for_observation(
+                    {"img": agent_obs["img"]},
+                    agent_state,
+                    first,
+                    return_embedding=True,
+                )
+            )
+            pd = self.STF_head(embedding)
+            v = self.head(embedding)
+            input_pd = {key: pd[key] - w * v[key] for key in v.keys()}
+            # input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
+            ac = self.STF_head.sample(input_pd, deterministic=False)
             ac = tree_map(lambda x: x[:, 0], ac)
 
             minerl_action = self.vpt_agent._agent_action_to_env(ac)
@@ -181,17 +260,30 @@ class CLSBellmanAdapter(nn.Module, FixVPTAdapter):
     def embed_loss(self, embedding, action, label, next_embedding):
         v = self.head(embedding)
         next_v = self.head(next_embedding)
+        next_logit = self.vpt_agent.policy.pi_head(next_embedding)
+
+        neg_r = -1
+        gamma = 0.99
+        alpha_coeff = (1 - gamma) * 1e-4
+
         total_loss = 0
 
         for key in v.keys():
             pred_v = v[key].squeeze()  # Shape: [batch_size, N]
             next_pred_v = next_v[key].squeeze()  # Shape: [batch_size, N]
             targets = action[key]  # Shape: [batch_size,1]
-            logit = pred_v.gather(1, targets.to(pred_v.device)).squeeze()
-            p = logit.sigmoid()
+            policy = next_logit[key].squeeze()
+            pred_v = pred_v.gather(1, targets.to(pred_v.device)).squeeze()
+            with torch.no_grad():
+                v_target = (
+                    gamma
+                    * (next_pred_v * torch.softmax(next_pred_v + policy, -1)).sum(-1)
+                    + neg_r
+                )
             loss = (
-                -(label * p.clamp(min=1e-8).log() + 0.5 * (1 - p).clamp(min=1e-8).log())
-                + 0.005 * (logit - 0.99 * next_pred_v.max(-1, keepdim=True)[0]) ** 2
+                (label * (pred_v + neg_r / (1 - gamma)) ** 2).mean()
+                + alpha_coeff * ((1 - label) * (pred_v) ** 2).mean()
+                + 0.5 * (pred_v - v_target) ** 2
             )
             total_loss += loss
         cls_loss = total_loss.mean()
@@ -220,7 +312,7 @@ class CLSBellmanAdapter(nn.Module, FixVPTAdapter):
             )
             pd = self.vpt_agent.policy.pi_head(embedding)
             v = self.head(embedding)
-            input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
+            input_pd = {key: pd[key] + w * v[key] for key in v.keys()}
             # input_pd = {key: pd[key] + w * v[key].sigmoid().log() for key in v.keys()}
             ac = self.vpt_agent.policy.pi_head.sample(input_pd, deterministic=False)
             ac = tree_map(lambda x: x[:, 0], ac)
@@ -311,6 +403,7 @@ method_dict = {
     "cls_bellman": {"adapter": CLSBellmanAdapter, "contrast_dataset": True},
     "cls_no_constrast": {"adapter": CLSAdapter, "contrast_dataset": False},
     "soft_adapter": {"adapter": SoftPromptAdapter, "contrast_dataset": False},
+    "sft_cls": {"adapter": SFTCLSAdapter, "contrast_dataset": False},
 }
 # import pickle
 # def load_model_parameters(path_to_model_file):
