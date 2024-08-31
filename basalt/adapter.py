@@ -397,13 +397,13 @@ class SoftPromptAdapter(nn.Module, AbstractAdapter):
 
 
 method_dict = {
-    "BC": {"adapter": BCAdapter, "contrast_dataset": False},
-    "BC_finetune": {"adapter": FineTuneBCAdapter, "contrast_dataset": False},
-    "cls": {"adapter": CLSAdapter, "contrast_dataset": True},
-    "cls_bellman": {"adapter": CLSBellmanAdapter, "contrast_dataset": True},
-    "cls_no_constrast": {"adapter": CLSAdapter, "contrast_dataset": False},
-    "soft_adapter": {"adapter": SoftPromptAdapter, "contrast_dataset": False},
-    "sft_cls": {"adapter": SFTCLSAdapter, "contrast_dataset": False},
+    "BC": {"adapter": BCAdapter, "expert_only": True},
+    "BC_finetune": {"adapter": FineTuneBCAdapter, "expert_only": True},
+    "cls": {"adapter": CLSAdapter, "expert_only": False},
+    "cls_bellman": {"adapter": CLSBellmanAdapter, "expert_only": False},
+    "cls_no_constrast": {"adapter": CLSAdapter, "expert_only": False},
+    "soft_adapter": {"adapter": SoftPromptAdapter, "expert_only": False},
+    "sft_cls": {"adapter": SFTCLSAdapter, "expert_only": False},
 }
 # import pickle
 # def load_model_parameters(path_to_model_file):

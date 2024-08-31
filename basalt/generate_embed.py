@@ -71,7 +71,7 @@ def train(args: Args):
         with open(file_list_path, "r") as f:
             file_list = f.read().splitlines()
         end = False
-        zip_size = ((len(file_list) // 75) // 2) * 2
+        zip_size = ((len(file_list) // 50) // 2) * 2
         for i in range(0, len(file_list) // (zip_size)):
             tar_file = f"{i}.tar"
             tar_path = os.path.join(dataset_dir, tar_file)

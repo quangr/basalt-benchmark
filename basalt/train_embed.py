@@ -14,6 +14,8 @@ import torch_xla.core.xla_model as xm
 import torch_xla
 import torch_xla.debug.metrics as met
 
+torch_xla.experimental.eager_mode(True)
+
 
 def identity(x):
     return x
@@ -58,7 +60,7 @@ def process_batches(dataloader, task_dict, batch_size=512):
 class Args:
     data: DefaultDataConfig
     tasks: TaskType = TaskType.CaveVsWater
-    method: str = "sft_cls"
+    method: str = "cls"
 
     @property
     def dataset_path(self):
@@ -71,10 +73,18 @@ device = xm.xla_device()
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    urls = sum(
-        [glob.glob(f"{path}/*.tar") for path in args.dataset_path],
-        [],
-    )
+    adapter_dict = method_dict[args.method]
+    if adapter_dict["expert_only"]:
+        urls = sum(
+            [glob.glob(f"{path}/*.tar") for path in [args.dataset_path[1]]],
+            [],
+        )
+    else:
+        urls = sum(
+            [glob.glob(f"{path}/*.tar") for path in args.dataset_path],
+            [],
+        )
+    print(urls)
     task_dict = {item: index for index, item in enumerate(args.tasks.value)}
     train_dataset = (
         wds.WebDataset(
@@ -101,35 +111,29 @@ if __name__ == "__main__":
     agent.load_weights(args.data.weights_path)
     agent.policy.eval()
     policy = agent.policy
-    adapter_dict = method_dict[args.method]
     adapter = adapter_dict["adapter"](agent)
     assert isinstance(adapter, FixVPTAdapter)
-    optimizer = torch.optim.Adam(adapter.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(adapter.parameters(), lr=0.0000181)
     import time
 
-    for epoch in range(50):
-        epoch_loss = 0
-        num_batches = 0
-        start_time = time.time()
-        step = 0
-        for batch in process_batches(train_dataloader, task_dict, batch_size=2048):
-            with torch_xla.step():
-                optimizer.zero_grad()
-                # batch = torch.utils._pytree.tree_map(lambda x: x, batch)
-                embedding, action, label = batch
-                loss = adapter.embed_loss(embedding, action, label)
-                loss.backward()
-                # optimizer.step()
-                xm.optimizer_step(optimizer)
+    def step_fn(adapter, batch, optimizer):
+        optimizer.zero_grad()
+        embedding, action, label = batch
+        loss = adapter.embed_loss(embedding, action, label)
+        loss.backward()
+        optimizer.step()
+        return loss
 
-                # epoch_loss += loss.detach()
-                # num_batches += 1
+    step_fn = torch_xla.experimental.compile(step_fn)
+
+    for epoch in range(50):
+        start_time = time.time()
+        for batch in process_batches(train_dataloader, task_dict, batch_size=2048):
+            loss = step_fn(adapter, batch, optimizer)
         end_time = time.time()
         elapsed_time = end_time - start_time
         print("FINISH, elapsed_time:", elapsed_time)
-        # average_train_loss = epoch_loss.item() / num_batches
-        # print(f"Epoch {epoch + 1}, Average Train Loss: {average_train_loss}")
-        # print(met.metrics_report())
+        print(f"Epoch {epoch + 1}, Train Loss: {loss.item()}")
 
         if (epoch + 1) % 10 == 0:
             save_path = f"checkpoints/{args.method}/epoch_{epoch + 1}.pt"

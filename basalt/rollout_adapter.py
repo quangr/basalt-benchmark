@@ -97,8 +97,8 @@ NUM_ENVS = 8
 @dataclass
 class Args:
     data: DefaultDataConfig
-    agent_weight: str = "checkpoints/sft_cls/epoch_50.pt"
-    w: float = 0.5
+    agent_weight: str = "checkpoints/BC/epoch_20.pt"
+    w: float = None
     result_format: str = "mp4"
 
 
@@ -136,19 +136,6 @@ device = xm.xla_device()
 
 
 def main(args: Args):
-    if args.result_format == "json":
-        results = {}
-    else:
-        results = [
-            videoio.VideoWriter(
-                generate_results_json_path(
-                    args.agent_weight, args.w, args.result_format, i
-                ),
-                resolution=AGENT_RESOLUTION,
-                fps=20,
-            )
-            for i in range(NUM_ENVS)
-        ]
     start_construction_time = time.time()
     ids = list(range(NUM_ENVS))
 
@@ -162,8 +149,6 @@ def main(args: Args):
         f"Time taken to construct {NUM_ENVS} environments: {construction_time:.2f} seconds"
     )
 
-    for i in range(NUM_ENVS):
-        process_observation(results, obs_list[i], ids[i], i, args.result_format)
 
     done = [False] * NUM_ENVS
     step = 0
@@ -187,6 +172,22 @@ def main(args: Args):
     adapter.load_parameters(args.agent_weight)
 
     agent_state = agent.policy.initial_state(NUM_ENVS)
+
+    if args.result_format == "json":
+        results = {}
+    else:
+        results = [
+            videoio.VideoWriter(
+                generate_results_json_path(
+                    args.agent_weight, args.w, args.result_format, i
+                ),
+                resolution=AGENT_RESOLUTION,
+                fps=20,
+            )
+            for i in range(NUM_ENVS)
+        ]
+    for i in range(NUM_ENVS):
+        process_observation(results, obs_list[i], ids[i], i, args.result_format)
 
     first = torch.ones(NUM_ENVS)
     rollout_num = NUM_ENVS

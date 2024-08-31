@@ -12,18 +12,18 @@ class BaseDataConfig:
 
     @property
     def weights_path(self) -> List[str]:
-        return f"{self.checkpoint_prefix}/foundation-model-{self.scale}.weights"
+        return f"{self.checkpoint_prefix}/rl-from-foundation-{self.scale}.weights"
 
     @property
     def model_path(self) -> List[str]:
-        return f"{self.checkpoint_prefix}/foundation-model-{self.scale}.model"
+        return f"{self.checkpoint_prefix}/{self.scale}.model"
 
 
 @dataclass
 class GCloudDataConfig(BaseDataConfig):
     task_data_prefix: str = "/data/demonstrations/"
-    checkpoint_prefix: str = "/data/"
-    scale: str = "3x"
+    checkpoint_prefix: str = "/data/VPT-models"
+    scale: str = "2x"
 
 
 @dataclass
@@ -43,4 +43,4 @@ class TaskType(enum.Enum):
     ]
 
 
-DefaultDataConfig = GpuDataConfig
+DefaultDataConfig = GCloudDataConfig
